@@ -1,0 +1,8 @@
+.{
+    .name = .zigot_modbus,
+    .fingerprint = 0x180c7e38e19ac7a6,
+    .version = "0.1.0-dev",
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{},
+    .paths = .{ "build.zig", "build.zig.zon", "src", "tests", "README.md", "LICENSE" },
+}
