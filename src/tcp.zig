@@ -78,7 +78,7 @@ pub fn decode_exception_response(frame: []const u8, expected_transaction_id: u16
     const function_code = frame[7];
     if ((function_code & 0x80) == 0) return error.InvalidFunctionCode;
 
-    const exception_code = @as(ExceptionCode, @enumFromInt(frame[8]));
+    const exception_code = @as(ExceptionCode, @fromBackingInt(@intCast(frame[8])));
     return ModbusException{
         .function_code = function_code & 0x7f,
         .exception_code = exception_code,

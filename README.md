@@ -2,8 +2,9 @@
 
 A Zig-first Modbus library for operational technology (OT), maintained by Tim555.
 
-**Status: project skeleton.** This is not yet a complete Modbus client or server.
-Currently includes protocol constants, function codes, and CRC-16/MODBUS with tests.
+**Status: early development.** Includes CRC-16/MODBUS, Modbus TCP codecs,
+a protocol-independent TCP transport, and a synchronous holding-register client.
+This is not yet a complete Modbus client or server.
 
 ## Design
 
@@ -11,11 +12,13 @@ Currently includes protocol constants, function codes, and CRC-16/MODBUS with te
 - Native Zig build system (`build.zig`) and package manifest (`build.zig.zon`).
 - Transport-independent protocol core, suitable for embedded and hosted applications.
 - Caller-owned buffers and explicit errors planned for codecs; no hidden allocations.
-- TCP sockets, serial devices, timeouts, and scheduling remain application concerns.
+- Optional TCP transport uses caller-supplied `std.Io` with configurable timeouts;
+  serial devices and application scheduling remain caller concerns.
 
 ## Toolchain and development
 
-The supported, CI-pinned toolchain is **Zig 0.15.2**. Newer Zig releases are not yet validated.
+The supported, CI-pinned toolchain is **Zig 0.17.0**.
+Networking uses `std.Io.net`, not the removed `std.net` API.
 
 ```sh
 zig build
@@ -25,11 +28,75 @@ zig build check -Dtarget=aarch64-linux
 zig fmt --check build.zig build.zig.zon src tests
 ```
 
-`zig build` registers the source module; this source-only package does not install a binary.
+`zig build` registers the source module and installs the example in `zig-out/bin`.
 `test` runs unit tests and separate tests through the public package import.
 `check` compiles both test suites without executing them, including for cross targets.
 CI runs formatting, Debug and ReleaseSafe tests, and a cross-compilation check
 on Linux, Windows, and macOS.
+
+`task run` builds and runs the example using `zig` on your PATH. It expects a
+Modbus server on `127.0.0.1:5020`; start `test_server/server.py` separately in a
+Python environment with `pymodbus==3.6.9`.
+
+## TCP client initialization
+
+Both clients take a caller-owned `std.Io` context. In an executable, receive it
+through Zig's `std.process.Init`; in tests, use `std.testing.io`.
+
+```zig
+const std = @import("std");
+const modbus = @import("zigot_modbus");
+
+pub fn main(init: std.process.Init) !void {
+    var client = modbus.SyncTcpModbusClient.init(init.io);
+    defer client.disconnect();
+    try client.connect("127.0.0.1", 5020);
+    var registers: [2]u16 = undefined;
+    const count = try client.readHoldingRegister(10, 2, 1, &registers);
+    std.debug.print("{any}\n", .{registers[0..count]});
+}
+```
+
+For protocol-independent I/O, use `TcpClient.init(init.io)` with `connect`,
+`send` (all bytes), `receive` (up to the buffer size), and `receiveExact`
+(fill the buffer or report EOF). TCP is a byte stream: sends do not define
+message boundaries. Calls are synchronous, with a default 5-second connect
+timeout and 2-second read/write timeouts.
+Hosts must be IPv4 or IPv6 literals, not DNS names.
+
+The I/O backend must outlive the client. Do not copy a connected client or share
+it concurrently. `disconnect` is idempotent; reconnecting while connected returns
+`AlreadyConnected`. Transport errors and observed EOF close the socket.
+
+### Transport timeouts
+
+Use `TcpClient.initWithOptions(io, options)` to customize the limits:
+
+```zig
+var client = modbus.TcpClient.initWithOptions(init.io, .{
+    .connect_timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
+    .read_timeout = .{ .duration = .{ .raw = .fromMilliseconds(500), .clock = .awake } },
+    .write_timeout = .{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } },
+});
+defer client.disconnect();
+```
+
+Each option accepts a `std.Io.Timeout`: `.none` disables the timeout, `.duration`
+starts a new budget per public operation, and `.deadline` uses an absolute
+deadline. `send` and `receiveExact` share one deadline across all partial I/O;
+receiving another fragment does not restart the timer. Empty-buffer operations
+are no-ops on a connected client, even if a configured deadline has expired.
+
+Timeouts return `error.Timeout` and close the connection. Some bytes may already
+have been sent or received; reconnect/retry decisions belong to the caller.
+Connect races a cancellable connect against a timer because Zig 0.17's threaded
+backend does not implement the native connect timeout option. Pending operations
+are cancelled and joined before returning, so they cannot outlive caller buffers.
+Timed operations require an I/O backend that supports concurrency.
+
+These are transport-operation limits, not a single Modbus transaction deadline.
+The Modbus client uses the transport defaults, but its request send, header read,
+and payload read each receive their own budget.
 
 ## Use as a Zig dependency
 
@@ -64,7 +131,9 @@ const checksum = zigot_modbus.rtu.crc16(&.{ 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a }
 | --- | --- |
 | `src/root.zig` | Public package API and function codes |
 | `src/rtu.zig` | RTU primitives and unit tests |
-| `src/tcp.zig` | TCP constants and future MBAP codec |
+| `src/tcp.zig` | Modbus TCP constants and codecs |
+| `src/tcp_transport.zig` | Protocol-independent `std.Io.net` transport |
+| `src/modbus_tcp.zig` | Synchronous Modbus TCP client |
 | `tests/root.zig` | Tests using the public module |
 | `build.zig` | Module registration and development steps |
 | `build.zig.zon` | Native package version, dependencies, and distribution paths |

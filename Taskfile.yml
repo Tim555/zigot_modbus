@@ -1,0 +1,13 @@
+version: '3'
+
+tasks:
+  run:
+    desc: Build and run the Modbus TCP example
+    cmds:
+      - zig build
+      - ./zig-out/bin/zigot_modbus_example
+
+  unit-test:
+    desc: Run the Zig test suite
+    cmds:
+      - zig build test

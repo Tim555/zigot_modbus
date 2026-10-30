@@ -8,7 +8,213 @@ test "public API: RTU read holding registers request checksum" {
 }
 
 test "public API: protocol constants" {
-    try std.testing.expectEqual(@as(u8, 3), @intFromEnum(zigot_modbus.FunctionCode.read_holding_registers));
+    try std.testing.expectEqual(@as(u8, 3), @backingInt(zigot_modbus.FunctionCode.read_holding_registers));
     try std.testing.expectEqual(@as(u16, 502), zigot_modbus.tcp.default_port);
     try std.testing.expectEqual(@as(usize, 260), zigot_modbus.tcp.max_adu_length);
+}
+
+test "public API: disconnected TCP transport rejects I/O" {
+    var client = zigot_modbus.TcpClient.init(std.testing.io);
+    var buffer: [1]u8 = undefined;
+    try std.testing.expect(!client.isConnected());
+    try std.testing.expectError(error.NotConnected, client.send("hello"));
+    try std.testing.expectError(error.NotConnected, client.receive(&buffer));
+    try std.testing.expectError(error.NotConnected, client.receiveExact(&buffer));
+    client.disconnect();
+    client.disconnect();
+}
+
+test "public API: TCP byte stream, EOF, and reconnect" {
+    const io = std.testing.io;
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try address.listen(io, .{});
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+
+    var client = zigot_modbus.TcpClient.init(io);
+    defer client.disconnect();
+    try client.connect("127.0.0.1", port);
+    const peer = try server.accept(io);
+    defer peer.close(io);
+    try std.testing.expect(client.isConnected());
+    try std.testing.expectError(error.AlreadyConnected, client.connect("127.0.0.1", port));
+
+    try client.send(&.{});
+    try std.testing.expectEqual(@as(usize, 0), try client.receive(&.{}));
+    try client.receiveExact(&.{});
+    try std.testing.expect(client.isConnected());
+
+    const bytes = [_]u8{ 0, 255, 1, 128, 42 };
+    try client.send(&bytes);
+    var received: [bytes.len]u8 = undefined;
+    try readPeerExact(peer, &received);
+    try std.testing.expectEqualSlices(u8, &bytes, &received);
+
+    var writer = peer.writer(io, &.{});
+    try writer.interface.writeAll("ab");
+    try writer.interface.writeAll("cdef");
+    var first: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), try client.receive(&first));
+    try std.testing.expectEqualStrings("a", &first);
+    var rest: [5]u8 = undefined;
+    try client.receiveExact(&rest);
+    try std.testing.expectEqualStrings("bcdef", &rest);
+
+    try peer.shutdown(io, .send);
+    try std.testing.expectEqual(@as(usize, 0), try client.receive(&first));
+    try std.testing.expect(!client.isConnected());
+    try client.connect("127.0.0.1", port);
+    const second_peer = try server.accept(io);
+    defer second_peer.close(io);
+    try std.testing.expect(client.isConnected());
+    client.disconnect();
+    client.disconnect();
+    try std.testing.expect(!client.isConnected());
+}
+
+test "public API: exact receive reports truncated stream" {
+    const io = std.testing.io;
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try address.listen(io, .{});
+    defer server.deinit(io);
+    var client = zigot_modbus.TcpClient.init(io);
+    defer client.disconnect();
+    try client.connect("127.0.0.1", server.socket.address.getPort());
+    const peer = try server.accept(io);
+    defer peer.close(io);
+    var writer = peer.writer(io, &.{});
+    try writer.interface.writeAll("ab");
+    try peer.shutdown(io, .send);
+
+    var buffer: [4]u8 = undefined;
+    try std.testing.expectError(error.EndOfStream, client.receiveExact(&buffer));
+    try std.testing.expectEqualStrings("ab", buffer[0..2]);
+    try std.testing.expect(!client.isConnected());
+}
+
+test "public API: Modbus read uses the Zig 0.17 transport" {
+    const io = std.testing.io;
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try address.listen(io, .{});
+    defer server.deinit(io);
+    var client = zigot_modbus.SyncTcpModbusClient.init(io);
+    defer client.disconnect();
+    try client.connect("127.0.0.1", server.socket.address.getPort());
+    const peer = try server.accept(io);
+    defer peer.close(io);
+
+    // Queue a canned response so this small exchange needs no worker thread.
+    const response = [_]u8{ 0, 0, 0, 0, 0, 7, 1, 3, 4, 0, 12, 0, 13 };
+    var writer = peer.writer(io, &.{});
+    try writer.interface.writeAll(&response);
+    var registers: [2]u16 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), try client.readHoldingRegister(10, 2, 1, &registers));
+    try std.testing.expectEqualSlices(u16, &.{ 12, 13 }, &registers);
+
+    var request: [12]u8 = undefined;
+    try readPeerExact(peer, &request);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0, 6, 1, 3, 0, 10, 0, 2 }, &request);
+}
+
+fn readPeerExact(peer: std.Io.net.Stream, buffer: []u8) !void {
+    var offset: usize = 0;
+    while (offset < buffer.len) {
+        var slices = [_][]u8{buffer[offset..]};
+        const result = try peer.readWithControl(std.testing.io, &slices, &.{});
+        if (result.data_len == 0) return error.EndOfStream;
+        offset += result.data_len;
+    }
+}
+
+test "TCP receive timeout closes a silent peer connection" {
+    var pair = try transportPair(.{ .read_timeout = timeoutMs(25) });
+    defer pair.client.disconnect();
+    defer pair.peer.close(std.testing.io);
+    var buffer: [1]u8 = undefined;
+    try std.testing.expectError(error.Timeout, pair.client.receive(&buffer));
+    try std.testing.expect(!pair.client.isConnected());
+    try std.testing.expectError(error.NotConnected, pair.client.receiveExact(&buffer));
+}
+
+test "TCP exact receive times out after a partial response" {
+    var pair = try transportPair(.{ .read_timeout = timeoutMs(25) });
+    defer pair.client.disconnect();
+    defer pair.peer.close(std.testing.io);
+    var writer = pair.peer.writer(std.testing.io, &.{});
+    try writer.interface.writeAll("ab");
+    var buffer: [4]u8 = undefined;
+    try std.testing.expectError(error.Timeout, pair.client.receiveExact(&buffer));
+    try std.testing.expectEqualStrings("ab", buffer[0..2]);
+    try std.testing.expect(!pair.client.isConnected());
+}
+
+test "TCP exact receive does not restart its timeout for each fragment" {
+    var pair = try transportPair(.{ .read_timeout = timeoutMs(150) });
+    defer pair.client.disconnect();
+    defer pair.peer.close(std.testing.io);
+    const SlowPeer = struct {
+        fn send(peer: std.Io.net.Stream) !void {
+            var writer = peer.writer(std.testing.io, &.{});
+            try writer.interface.writeAll("a");
+            try std.Io.sleep(std.testing.io, .fromMilliseconds(100), .awake);
+            try writer.interface.writeAll("b");
+            try std.Io.sleep(std.testing.io, .fromMilliseconds(100), .awake);
+            try writer.interface.writeAll("c");
+        }
+    };
+    var sender = try std.testing.io.concurrent(SlowPeer.send, .{pair.peer});
+    defer _ = sender.cancel(std.testing.io) catch {};
+    var buffer: [3]u8 = undefined;
+    try std.testing.expectError(error.Timeout, pair.client.receiveExact(&buffer));
+    try std.testing.expect(!pair.client.isConnected());
+}
+
+test "TCP send timeout closes a backpressured connection" {
+    var pair = try transportPair(.{ .write_timeout = timeoutMs(25) });
+    defer pair.client.disconnect();
+    defer pair.peer.close(std.testing.io);
+    // The peer deliberately never reads; this exceeds typical socket buffers.
+    const bytes = try std.testing.allocator.alloc(u8, 32 * 1024 * 1024);
+    defer std.testing.allocator.free(bytes);
+    @memset(bytes, 0x5a);
+    try std.testing.expectError(error.Timeout, pair.client.send(bytes));
+    try std.testing.expect(!pair.client.isConnected());
+}
+
+test "TCP timeouts can be disabled" {
+    var pair = try transportPair(.{
+        .connect_timeout = .none,
+        .read_timeout = .none,
+        .write_timeout = .none,
+    });
+    defer pair.client.disconnect();
+    defer pair.peer.close(std.testing.io);
+    try pair.client.send("hi");
+    var request: [2]u8 = undefined;
+    try readPeerExact(pair.peer, &request);
+    try std.testing.expectEqualStrings("hi", &request);
+    var writer = pair.peer.writer(std.testing.io, &.{});
+    try writer.interface.writeAll("ok");
+    var response: [2]u8 = undefined;
+    try pair.client.receiveExact(&response);
+    try std.testing.expectEqualStrings("ok", &response);
+}
+
+fn timeoutMs(milliseconds: i64) std.Io.Timeout {
+    return .{ .duration = .{ .raw = .fromMilliseconds(milliseconds), .clock = .awake } };
+}
+
+fn transportPair(options: zigot_modbus.TcpClient.Options) !struct {
+    client: zigot_modbus.TcpClient,
+    peer: std.Io.net.Stream,
+} {
+    const io = std.testing.io;
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try address.listen(io, .{});
+    defer server.deinit(io);
+    var client = zigot_modbus.TcpClient.initWithOptions(io, options);
+    errdefer client.disconnect();
+    try client.connect("127.0.0.1", server.socket.address.getPort());
+    const peer = try server.accept(io);
+    return .{ .client = client, .peer = peer };
 }

@@ -1,7 +1,12 @@
-//! Transport-independent Modbus building blocks. Networking and serial I/O
-//! will be supplied by callers; this package does not open devices or sockets.
+//! Transport-independent Modbus codecs, a reusable blocking TCP transport,
+//! and a synchronous Modbus TCP client. Serial I/O remains caller-supplied.
 pub const rtu = @import("rtu.zig");
 pub const tcp = @import("tcp.zig");
+pub const modbus_tcp = @import("modbus_tcp.zig");
+pub const tcp_transport = @import("tcp_transport.zig");
+pub const TcpClient = tcp_transport.TcpClient;
+pub const SyncTcpModbusClient = modbus_tcp.SyncTcpModbusClient;
+pub const TcpModbusClient = modbus_tcp.TcpModbusClient;
 pub const max_pdu_length = 253;
 
 pub const FunctionCode = enum(u8) {
@@ -19,4 +24,6 @@ pub const FunctionCode = enum(u8) {
 test {
     _ = rtu;
     _ = tcp;
+    _ = modbus_tcp;
+    _ = tcp_transport;
 }

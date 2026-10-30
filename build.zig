@@ -15,6 +15,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "zigot_modbus", .module = zigot_modbus }},
     }) });
+
+    const example_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zigot_modbus", .module = zigot_modbus }},
+    });
+    const example = b.addExecutable(.{
+        .name = "zigot_modbus_example",
+        .root_module = example_module,
+    });
+    b.installArtifact(example);
+
     const test_step = b.step("test", "Run unit and public API tests");
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
