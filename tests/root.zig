@@ -9,8 +9,8 @@ test "public API: RTU read holding registers request checksum" {
 
 test "public API: protocol constants" {
     try std.testing.expectEqual(@as(u8, 3), @backingInt(zigot_modbus.FunctionCode.read_holding_registers));
-    try std.testing.expectEqual(@as(u16, 502), zigot_modbus.tcp.default_port);
-    try std.testing.expectEqual(@as(usize, 260), zigot_modbus.tcp.max_adu_length);
+    try std.testing.expectEqual(@as(u16, 502), zigot_modbus.modbus_codec.default_port);
+    try std.testing.expectEqual(@as(usize, 260), zigot_modbus.modbus_codec.max_adu_length);
 }
 
 test "public API: disconnected TCP transport rejects I/O" {
@@ -254,7 +254,7 @@ test "public API: input registers, coils and discrete inputs" {
             else => unreachable,
         };
         try std.testing.expectEqual(function, result.exception.function_code);
-        try std.testing.expectEqual(zigot_modbus.tcp.ExceptionCode.illegal_data_address, result.exception.exception_code);
+        try std.testing.expectEqual(zigot_modbus.modbus_codec.ExceptionCode.illegal_data_address, result.exception.exception_code);
     }
 }
 

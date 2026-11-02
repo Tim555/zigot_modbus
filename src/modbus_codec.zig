@@ -1,3 +1,5 @@
+//! Modbus frame and PDU codecs. Currently supports TCP MBAP framing; socket I/O
+//! lives in tcp_transport.zig.
 const std = @import("std");
 
 pub const default_port: u16 = 502;

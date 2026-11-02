@@ -1,5 +1,5 @@
 const std = @import("std");
-const tcp = @import("tcp.zig");
+const codec = @import("modbus_codec.zig");
 const TcpClient = @import("tcp_transport.zig").TcpClient;
 
 /// Maximum registers per FC03/FC04 request.
@@ -10,13 +10,13 @@ pub const max_bit_count: usize = 2000;
 /// Successful element count or the server exception, including its raw frame.
 pub const ReadResult = union(enum) {
     count: usize,
-    exception: tcp.ModbusException,
+    exception: codec.ModbusException,
 };
 
 /// Acknowledged element count or the complete server exception.
 pub const WriteResult = ReadResult;
-pub const max_write_coil_count = tcp.max_write_coil_count;
-pub const max_write_register_count = tcp.max_write_register_count;
+pub const max_write_coil_count = codec.max_write_coil_count;
+pub const max_write_register_count = codec.max_write_register_count;
 
 pub const ReadHoldingRegisterResult = ReadResult;
 pub const ReadInputRegisterResult = ReadResult;
@@ -110,20 +110,20 @@ pub const SyncTcpModbusClient = struct {
         if (out.len < quantity) return error.BufferTooSmall;
 
         const request_id = self.transaction_id();
-        var request: [tcp.mbap_header_length + 5]u8 = undefined;
+        var request: [codec.mbap_header_length + 5]u8 = undefined;
         const request_len = try switch (function) {
-            1 => tcp.encode_read_coils_request(request_id, unit_id, address, quantity, &request),
-            2 => tcp.encode_read_discrete_inputs_request(request_id, unit_id, address, quantity, &request),
-            3 => tcp.encode_read_holding_registers_request(request_id, unit_id, address, quantity, &request),
-            4 => tcp.encode_read_input_registers_request(request_id, unit_id, address, quantity, &request),
+            1 => codec.encode_read_coils_request(request_id, unit_id, address, quantity, &request),
+            2 => codec.encode_read_discrete_inputs_request(request_id, unit_id, address, quantity, &request),
+            3 => codec.encode_read_holding_registers_request(request_id, unit_id, address, quantity, &request),
+            4 => codec.encode_read_input_registers_request(request_id, unit_id, address, quantity, &request),
             else => unreachable,
         };
-        var response: [tcp.max_adu_length]u8 = undefined;
+        var response: [codec.max_adu_length]u8 = undefined;
         const response_len = try self.exchange(request[0..request_len], request_id, unit_id, &response);
         const frame = response[0..response_len];
         const function_code = frame[7];
         if ((function_code & 0x80) != 0) {
-            const exc = try tcp.decode_exception_response(frame, request_id, unit_id);
+            const exc = try codec.decode_exception_response(frame, request_id, unit_id);
             if (exc.function_code != function) return error.InvalidFunctionCode;
             return .{ .exception = exc };
         }
@@ -132,10 +132,10 @@ pub const SyncTcpModbusClient = struct {
         if (function_code != function) return error.InvalidFunctionCode;
         if (frame[8] != expected_bytes) return error.InvalidByteCount;
         const count = try switch (function) {
-            1 => tcp.decode_read_coils_response(frame, request_id, unit_id, quantity, out),
-            2 => tcp.decode_read_discrete_inputs_response(frame, request_id, unit_id, quantity, out),
-            3 => tcp.decode_read_holding_registers_response(frame, request_id, unit_id, out),
-            4 => tcp.decode_read_input_registers_response(frame, request_id, unit_id, out),
+            1 => codec.decode_read_coils_response(frame, request_id, unit_id, quantity, out),
+            2 => codec.decode_read_discrete_inputs_response(frame, request_id, unit_id, quantity, out),
+            3 => codec.decode_read_holding_registers_response(frame, request_id, unit_id, out),
+            4 => codec.decode_read_input_registers_response(frame, request_id, unit_id, out),
             else => unreachable,
         };
         return .{ .count = count };
@@ -154,8 +154,8 @@ pub const SyncTcpModbusClient = struct {
     /// Same write contract, preserving the server exception in WriteResult.
     pub fn writeSingleCoilDetailed(self: *SyncTcpModbusClient, address: u16, value: bool, unit_id: u8) !WriteResult {
         if (!self.isConnected()) return error.NotConnected;
-        var request: [tcp.max_adu_length]u8 = undefined;
-        const request_len = try tcp.encode_write_single_coil_request(self._transaction_id, unit_id, address, value, &request);
+        var request: [codec.max_adu_length]u8 = undefined;
+        const request_len = try codec.encode_write_single_coil_request(self._transaction_id, unit_id, address, value, &request);
         return self.writeDetailed(request[0..request_len], unit_id);
     }
 
@@ -172,8 +172,8 @@ pub const SyncTcpModbusClient = struct {
     /// Same write contract, preserving the server exception in WriteResult.
     pub fn writeSingleRegisterDetailed(self: *SyncTcpModbusClient, address: u16, value: u16, unit_id: u8) !WriteResult {
         if (!self.isConnected()) return error.NotConnected;
-        var request: [tcp.max_adu_length]u8 = undefined;
-        const request_len = try tcp.encode_write_single_register_request(self._transaction_id, unit_id, address, value, &request);
+        var request: [codec.max_adu_length]u8 = undefined;
+        const request_len = try codec.encode_write_single_register_request(self._transaction_id, unit_id, address, value, &request);
         return self.writeDetailed(request[0..request_len], unit_id);
     }
 
@@ -190,8 +190,8 @@ pub const SyncTcpModbusClient = struct {
     /// Same write contract, preserving the server exception in WriteResult.
     pub fn writeMultipleCoilsDetailed(self: *SyncTcpModbusClient, address: u16, values: []const bool, unit_id: u8) !WriteResult {
         if (!self.isConnected()) return error.NotConnected;
-        var request: [tcp.max_adu_length]u8 = undefined;
-        const request_len = try tcp.encode_write_multiple_coils_request(self._transaction_id, unit_id, address, values, &request);
+        var request: [codec.max_adu_length]u8 = undefined;
+        const request_len = try codec.encode_write_multiple_coils_request(self._transaction_id, unit_id, address, values, &request);
         return self.writeDetailed(request[0..request_len], unit_id);
     }
 
@@ -208,43 +208,43 @@ pub const SyncTcpModbusClient = struct {
     /// Same write contract, preserving the server exception in WriteResult.
     pub fn writeMultipleRegistersDetailed(self: *SyncTcpModbusClient, address: u16, values: []const u16, unit_id: u8) !WriteResult {
         if (!self.isConnected()) return error.NotConnected;
-        var request: [tcp.max_adu_length]u8 = undefined;
-        const request_len = try tcp.encode_write_multiple_registers_request(self._transaction_id, unit_id, address, values, &request);
+        var request: [codec.max_adu_length]u8 = undefined;
+        const request_len = try codec.encode_write_multiple_registers_request(self._transaction_id, unit_id, address, values, &request);
         return self.writeDetailed(request[0..request_len], unit_id);
     }
 
     fn writeDetailed(self: *SyncTcpModbusClient, request: []const u8, unit_id: u8) !WriteResult {
         const request_id = self.transaction_id();
-        var response: [tcp.max_adu_length]u8 = undefined;
+        var response: [codec.max_adu_length]u8 = undefined;
         const response_len = try self.exchange(request, request_id, unit_id, &response);
         const frame = response[0..response_len];
         const function = request[7];
         if ((frame[7] & 0x80) != 0) {
-            const exception = try tcp.decode_exception_response(frame, request_id, unit_id);
+            const exception = try codec.decode_exception_response(frame, request_id, unit_id);
             if (exception.function_code != function) return error.InvalidFunctionCode;
             return .{ .exception = exception };
         }
         const address = (@as(u16, request[8]) << 8) | request[9];
         const value = (@as(u16, request[10]) << 8) | request[11];
         const count = try switch (function) {
-            5 => tcp.decode_write_single_coil_response(frame, request_id, unit_id, address, value != 0),
-            6 => tcp.decode_write_single_register_response(frame, request_id, unit_id, address, value),
-            15 => tcp.decode_write_multiple_coils_response(frame, request_id, unit_id, address, value),
-            16 => tcp.decode_write_multiple_registers_response(frame, request_id, unit_id, address, value),
+            5 => codec.decode_write_single_coil_response(frame, request_id, unit_id, address, value != 0),
+            6 => codec.decode_write_single_register_response(frame, request_id, unit_id, address, value),
+            15 => codec.decode_write_multiple_coils_response(frame, request_id, unit_id, address, value),
+            16 => codec.decode_write_multiple_registers_response(frame, request_id, unit_id, address, value),
             else => unreachable,
         };
         return .{ .count = count };
     }
 
     // Receive one complete ADU into caller-owned storage after sending the request.
-    fn exchange(self: *SyncTcpModbusClient, request: []const u8, request_id: u16, unit_id: u8, response: *[tcp.max_adu_length]u8) !usize {
+    fn exchange(self: *SyncTcpModbusClient, request: []const u8, request_id: u16, unit_id: u8, response: *[codec.max_adu_length]u8) !usize {
         try self.transport.send(request);
 
         // TCP may split a frame across reads; first obtain the complete fixed header.
-        var response_header: [tcp.mbap_header_length]u8 = undefined;
+        var response_header: [codec.mbap_header_length]u8 = undefined;
         try self.transport.receiveExact(&response_header);
 
-        const mbap_header = try tcp.decode_mbap_header(&response_header);
+        const mbap_header = try codec.decode_mbap_header(&response_header);
         if (mbap_header.transaction_id != request_id) return error.TransactionIdMismatch;
         if (mbap_header.protocol_id != 0) return error.InvalidProtocolId;
         if (mbap_header.unit_id != unit_id) return error.UnitIdMismatch;
@@ -252,12 +252,12 @@ pub const SyncTcpModbusClient = struct {
 
         // MBAP length includes the unit ID already consumed in the seven-byte header.
         const payload_length: usize = @as(usize, mbap_header.length) - 1;
-        if (payload_length > tcp.max_adu_length - tcp.mbap_header_length) return error.ResponseTooLarge;
+        if (payload_length > codec.max_adu_length - codec.mbap_header_length) return error.ResponseTooLarge;
 
-        std.mem.copyForwards(u8, response[0..tcp.mbap_header_length], &response_header);
-        try self.transport.receiveExact(response[tcp.mbap_header_length .. tcp.mbap_header_length + payload_length]);
+        std.mem.copyForwards(u8, response[0..codec.mbap_header_length], &response_header);
+        try self.transport.receiveExact(response[codec.mbap_header_length .. codec.mbap_header_length + payload_length]);
 
-        return tcp.mbap_header_length + payload_length;
+        return codec.mbap_header_length + payload_length;
     }
 
     fn transaction_id(self: *SyncTcpModbusClient) u16 {
@@ -298,7 +298,7 @@ test "readHoldingRegisterDetailed preserves modbus exception payload" {
     const result = try client.readHoldingRegisterDetailed(14, 2, 1, &registers);
 
     try std.testing.expectEqual(@as(u8, 0x03), result.exception.function_code);
-    try std.testing.expectEqual(@as(tcp.ExceptionCode, .illegal_data_address), result.exception.exception_code);
+    try std.testing.expectEqual(@as(codec.ExceptionCode, .illegal_data_address), result.exception.exception_code);
     try std.testing.expectEqual(@as(u16, 0x1234), result.exception.transaction_id);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x83, 0x02 }, result.exception.pdu[0..result.exception.pdu_len]);
 }

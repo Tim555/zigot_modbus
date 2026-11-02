@@ -1,7 +1,9 @@
 //! Transport-independent Modbus codecs, a reusable blocking TCP transport,
 //! and a synchronous Modbus TCP client. Serial I/O remains caller-supplied.
 pub const rtu = @import("rtu.zig");
-pub const tcp = @import("tcp.zig");
+pub const modbus_codec = @import("modbus_codec.zig");
+/// Compatibility alias; prefer modbus_codec for MBAP and PDU codecs.
+pub const tcp = modbus_codec;
 pub const modbus_tcp = @import("modbus_tcp.zig");
 pub const tcp_transport = @import("tcp_transport.zig");
 pub const TcpClient = tcp_transport.TcpClient;
@@ -23,7 +25,7 @@ pub const FunctionCode = enum(u8) {
 
 test {
     _ = rtu;
-    _ = tcp;
+    _ = modbus_codec;
     _ = modbus_tcp;
     _ = tcp_transport;
 }

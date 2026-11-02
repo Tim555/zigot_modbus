@@ -131,7 +131,7 @@ const checksum = zigot_modbus.rtu.crc16(&.{ 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a }
 | --- | --- |
 | `src/root.zig` | Public package API and function codes |
 | `src/rtu.zig` | RTU primitives and unit tests |
-| `src/tcp.zig` | Modbus TCP constants and codecs |
+| `src/modbus_codec.zig` | Modbus frame and PDU encoding/decoding (`modbus_codec`; currently TCP MBAP) |
 | `src/tcp_transport.zig` | Protocol-independent `std.Io.net` transport |
 | `src/modbus_tcp.zig` | Synchronous Modbus TCP client |
 | `tests/root.zig` | Tests using the public module |
