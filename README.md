@@ -3,7 +3,7 @@
 A Zig-first Modbus library for operational technology (OT), maintained by Tim555.
 
 **Status: early development.** Includes CRC-16/MODBUS, Modbus TCP codecs,
-a protocol-independent TCP transport, and a synchronous holding-register client.
+a protocol-independent TCP transport, and a synchronous client for holding registers, input registers, coils, and discrete inputs.
 This is not yet a complete Modbus client or server.
 
 ## Design
@@ -153,3 +153,39 @@ or production-readiness claims are made.
 ## License
 
 [MIT](LICENSE).
+
+TCP reads use caller-owned output buffers: `readInputRegister(address, quantity, unit_id, out)`
+accepts `[]u16` (1–125 registers); `readCoils` and `readDiscreteInputs` accept
+`[]bool` (1–2000 bits). Bits follow address order, with the least significant bit
+first on the wire; final-byte padding is ignored. Each method also has a
+`Detailed` variant returning a count or the complete Modbus exception payload.
+Responses must contain exactly the requested number of registers or packed bytes.
+
+## Interoperability and decoder robustness
+
+The optional interop harness runs a real **PyModbus 3.6.9** TCP server and its
+reference client, then checks this Zig client against the reference results.
+It uses an ephemeral loopback port and closes the server after the run.
+Install the pinned dependency in an isolated environment if needed:
+
+```bash
+python3 -m venv /tmp/modbus-interop-venv
+/tmp/modbus-interop-venv/bin/python -m pip install -r test_server/interop-requirements.txt
+/tmp/modbus-interop-venv/bin/python test_server/interop.py --artifacts /tmp/interop-debug
+/tmp/modbus-interop-venv/bin/python test_server/interop.py --optimize ReleaseSafe --artifacts /tmp/interop-release
+zig build fuzz-smoke
+```
+
+An existing `test_server/.venv` with the pinned dependency can be used instead.
+The harness accepts `--zig PATH`, `--zig-cache-dir PATH`, `--seed N`, and
+`--random-cases N` (per function/unit pair). It retains reference vectors, a
+JSON report, and Zig output in the artifact directory. The default 352 cases
+cover all four read functions, two units, maximum quantities, bit boundaries,
+illegal addresses, transaction rollover, and reconnects. These tests are
+opt-in; `zig build test` requires no Python server.
+
+`fuzz-smoke` runs 20,000 deterministic decoder mutations and six oversized
+MBAP-length cases with runtime safety checks. It complements valid-request
+interop tests; it is not a coverage-guided fuzz campaign. The reusable
+[`modbus-interop` skill](skills/modbus-interop/SKILL.md) describes the workflow
+and deeper fuzzing and network-fault tests.

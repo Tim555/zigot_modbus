@@ -1,0 +1,4 @@
+interface:
+  display_name: "Modbus Interoperability"
+  short_description: "Compare Zig Modbus reads with an independent stack"
+  default_prompt: "Use $modbus-interop to run the Modbus TCP interoperability and decoder robustness checks."

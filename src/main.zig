@@ -15,11 +15,30 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Status: connected={}\n", .{client.isConnected()});
 
     var result: [2]u16 = undefined;
-    const count = client.readHoldingRegister(10, 2, 1, &result) catch |err| {
+    const c = client.readHoldingRegister(10, 2, 1, &result) catch |err| {
         std.debug.print("Failed to read holding registers: {}\n", .{err});
         return err;
     };
-    std.debug.print("Read {} holding registers: {any}\n", .{ count, result[0..count] });
+
+    std.debug.print("Read {} holding registers: {any}\n", .{ c, result[0..c] });
+
+    const detailed = client.readHoldingRegisterDetailed(14, 2, 1, &result) catch |err| {
+        std.debug.print("Failed to read holding registers: {}\n", .{err});
+        return;
+    };
+    switch (detailed) {
+        .count => |count| std.debug.print("Read {} holding registers: {any}\n", .{ count, result[0..count] }),
+        .exception => |exc| {
+            std.debug.print("Modbus exception: function={} code={} tx={} unit={} header={any} pdu={any}\n", .{
+                exc.function_code,
+                exc.exception_code,
+                exc.transaction_id,
+                exc.unit_id,
+                exc.header,
+                exc.pdu,
+            });
+        },
+    }
     client.disconnect();
     std.debug.print("Status: connected={}\n", .{client.isConnected()});
 }

@@ -1,0 +1,46 @@
+const std = @import("std");
+const modbus = @import("zigot_modbus");
+const vectors = @import("interop_vectors");
+const options = @import("interop_options");
+
+test "PyModbus reference-client vectors match Zig TCP reads" {
+    var client = modbus.SyncTcpModbusClient.init(std.testing.io);
+    defer client.disconnect();
+    try client.connect("127.0.0.1", options.port);
+    // Exercise transaction rollover within a persistent connection.
+    client._transaction_id = 0xfffe;
+    for (vectors.cases, 0..) |case, index| {
+        errdefer std.debug.print("interop case {}: fc={} unit={} address={} quantity={}\n", .{ index, case.function, case.unit, case.address, case.quantity });
+        if (index != 0 and index % 37 == 0) {
+            client.disconnect();
+            try client.connect("127.0.0.1", options.port);
+        }
+        var registers: [126]u16 = @splat(0xdead);
+        var bits: [2001]bool = @splat(true);
+        const result = try switch (case.function) {
+            1 => client.readCoilsDetailed(case.address, case.quantity, case.unit, &bits),
+            2 => client.readDiscreteInputsDetailed(case.address, case.quantity, case.unit, &bits),
+            3 => client.readHoldingRegisterDetailed(case.address, case.quantity, case.unit, &registers),
+            4 => client.readInputRegisterDetailed(case.address, case.quantity, case.unit, &registers),
+            else => unreachable,
+        };
+        if (case.exception != 0) {
+            try std.testing.expect(result == .exception);
+            try std.testing.expectEqual(case.exception, @backingInt(result.exception.exception_code));
+            try std.testing.expectEqual(case.function, result.exception.function_code);
+            try std.testing.expectEqual(case.unit, result.exception.unit_id);
+            continue;
+        }
+        try std.testing.expect(result == .count);
+        try std.testing.expectEqual(@as(usize, case.quantity), result.count);
+        if (case.function <= 2) {
+            for (case.values, bits[0..case.quantity]) |expected, actual| {
+                try std.testing.expectEqual(expected != 0, actual);
+            }
+            try std.testing.expect(bits[case.quantity]);
+        } else {
+            try std.testing.expectEqualSlices(u16, case.values, registers[0..case.quantity]);
+            try std.testing.expectEqual(@as(u16, 0xdead), registers[case.quantity]);
+        }
+    }
+}

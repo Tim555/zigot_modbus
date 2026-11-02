@@ -1,0 +1,2 @@
+# Deliberately pinned: the fixture uses the 3.6 API (slave=, zero_mode).
+pymodbus==3.6.9

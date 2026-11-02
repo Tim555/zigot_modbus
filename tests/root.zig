@@ -218,3 +218,74 @@ fn transportPair(options: zigot_modbus.TcpClient.Options) !struct {
     const peer = try server.accept(io);
     return .{ .client = client, .peer = peer };
 }
+
+test "public API: input registers, coils and discrete inputs" {
+    inline for (.{ @as(u8, 1), @as(u8, 2), @as(u8, 4) }) |function| {
+        var pair = try transportPair(.{});
+        defer pair.peer.close(std.testing.io);
+        // Reuse the connected transport in the Modbus client.
+        var client: zigot_modbus.SyncTcpModbusClient = .{ .transport = pair.client };
+        defer client.disconnect();
+        const quantity: u16 = if (function == 4) 2 else 10;
+        const response = [_]u8{ 0, 0, 0, 0, 0, if (function == 4) 7 else 5, 1, function, if (function == 4) 4 else 2, 0x81, 0xfe, 0x56, 0x78 };
+        var writer = pair.peer.writer(std.testing.io, &.{});
+        try writer.interface.writeAll(response[0..if (function == 4) 13 else 11]);
+        if (function == 4) {
+            var registers: [3]u16 = .{ 0, 0, 99 };
+            try std.testing.expectEqual(@as(usize, 2), try client.readInputRegister(0x1234, quantity, 1, &registers));
+            try std.testing.expectEqualSlices(u16, &.{ 0x81fe, 0x5678, 99 }, &registers);
+        } else {
+            var bits: [11]bool = @splat(true);
+            const count = if (function == 1) try client.readCoils(0x1234, quantity, 1, &bits) else try client.readDiscreteInputs(0x1234, quantity, 1, &bits);
+            try std.testing.expectEqual(@as(usize, 10), count);
+            try std.testing.expectEqualSlices(bool, &.{ true, false, false, false, false, false, false, true, false, true, true }, &bits);
+        }
+        var request: [12]u8 = undefined;
+        try readPeerExact(pair.peer, &request);
+        try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0, 6, 1, function, 0x12, 0x34, 0, @intCast(quantity) }, &request);
+
+        const exception = [_]u8{ 0, 1, 0, 0, 0, 3, 1, function | 0x80, 2 };
+        try writer.interface.writeAll(&exception);
+        var out: [10]if (function == 4) u16 else bool = undefined;
+        const result = switch (function) {
+            1 => try client.readCoilsDetailed(0, quantity, 1, &out),
+            2 => try client.readDiscreteInputsDetailed(0, quantity, 1, &out),
+            4 => try client.readInputRegisterDetailed(0, quantity, 1, &out),
+            else => unreachable,
+        };
+        try std.testing.expectEqual(function, result.exception.function_code);
+        try std.testing.expectEqual(zigot_modbus.tcp.ExceptionCode.illegal_data_address, result.exception.exception_code);
+    }
+}
+
+test "new TCP reads reject invalid requests and mismatched responses" {
+    inline for (.{ @as(u8, 1), @as(u8, 2), @as(u8, 4) }) |function| {
+        var pair = try transportPair(.{});
+        defer pair.peer.close(std.testing.io);
+        var client: zigot_modbus.SyncTcpModbusClient = .{ .transport = pair.client };
+        defer client.disconnect();
+        const read = switch (function) {
+            1 => zigot_modbus.SyncTcpModbusClient.readCoils,
+            2 => zigot_modbus.SyncTcpModbusClient.readDiscreteInputs,
+            4 => zigot_modbus.SyncTcpModbusClient.readInputRegister,
+            else => unreachable,
+        };
+        var out: [10]if (function == 4) u16 else bool = undefined;
+        try std.testing.expectError(error.InvalidQuantity, read(&client, 0, 0, 1, &out));
+        try std.testing.expectError(error.InvalidQuantity, read(&client, 0, if (function == 4) 126 else 2001, 1, &out));
+        try std.testing.expectError(error.BufferTooSmall, read(&client, 0, 2, 1, out[0..1]));
+        // A well-framed response with too little data for the requested quantity.
+        const response = [_]u8{ 0, 0, 0, 0, 0, if (function == 4) 5 else 4, 1, function, if (function == 4) 2 else 1, 0, 0 };
+        var writer = pair.peer.writer(std.testing.io, &.{});
+        try writer.interface.writeAll(response[0..if (function == 4) 11 else 10]);
+        try std.testing.expectError(error.InvalidByteCount, read(&client, 0, if (function == 4) 2 else 10, 1, &out));
+        const unrelated_exception = [_]u8{ 0, 1, 0, 0, 0, 3, 1, 0x83, 2 };
+        try writer.interface.writeAll(&unrelated_exception);
+        try std.testing.expectError(error.InvalidFunctionCode, read(&client, 0, 1, 1, &out));
+        const exception = [_]u8{ 0, 2, 0, 0, 0, 3, 1, function | 0x80, 2 };
+        try writer.interface.writeAll(&exception);
+        try std.testing.expectError(error.ModbusException, read(&client, 0, 1, 1, &out));
+        client.disconnect();
+        try std.testing.expectError(error.NotConnected, read(&client, 0, 1, 1, &out));
+    }
+}
