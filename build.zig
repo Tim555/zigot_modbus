@@ -40,7 +40,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "zigot_modbus", .module = zigot_modbus }},
     }) });
-    const fuzz_step = b.step("fuzz-smoke", "Run bounded deterministic TCP read decoder mutations");
+    const fuzz_step = b.step("fuzz-smoke", "Run bounded deterministic TCP read/write decoder mutations");
     fuzz_step.dependOn(&b.addRunArtifact(fuzz_smoke).step);
 
     // Opt-in: the Python harness supplies a live loopback server and reference vectors.

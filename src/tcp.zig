@@ -96,18 +96,26 @@ pub fn decode_mbap_header(frame: []const u8) !MbapHeader {
     };
 }
 
+/// Encode FC03 for 1–125 holding registers at a zero-based wire address.
+/// Requires 12 output bytes and returns the encoded frame length.
 pub fn encode_read_holding_registers_request(transaction_id: u16, unit_id: u8, address: u16, quantity: u16, out: []u8) !usize {
     return encode_read_request(3, 125, transaction_id, unit_id, address, quantity, out);
 }
 
+/// Encode FC04 for 1–125 input registers at a zero-based wire address.
+/// Requires 12 output bytes and returns the encoded frame length.
 pub fn encode_read_input_registers_request(transaction_id: u16, unit_id: u8, address: u16, quantity: u16, out: []u8) !usize {
     return encode_read_request(4, 125, transaction_id, unit_id, address, quantity, out);
 }
 
+/// Encode FC01 for 1–2000 coils at a zero-based wire address.
+/// Requires 12 output bytes and returns the encoded frame length.
 pub fn encode_read_coils_request(transaction_id: u16, unit_id: u8, address: u16, quantity: u16, out: []u8) !usize {
     return encode_read_request(1, 2000, transaction_id, unit_id, address, quantity, out);
 }
 
+/// Encode FC02 for 1–2000 discrete inputs at a zero-based wire address.
+/// Requires 12 output bytes and returns the encoded frame length.
 pub fn encode_read_discrete_inputs_request(transaction_id: u16, unit_id: u8, address: u16, quantity: u16, out: []u8) !usize {
     return encode_read_request(2, 2000, transaction_id, unit_id, address, quantity, out);
 }
@@ -123,6 +131,116 @@ fn encode_read_request(function_code: u8, max_quantity: u16, transaction_id: u16
     out[10] = @as(u8, @intCast((quantity >> 8) & 0xff));
     out[11] = @as(u8, @intCast(quantity & 0xff));
     return mbap_header_length + 5;
+}
+
+/// Maximum values in FC15/FC16 requests (their PDUs include a byte-count field).
+pub const max_write_coil_count: usize = 1968;
+pub const max_write_register_count: usize = 123;
+
+fn put_u16(out: []u8, offset: usize, value: u16) void {
+    out[offset] = @intCast(value >> 8);
+    out[offset + 1] = @truncate(value);
+}
+
+fn get_u16(frame: []const u8, offset: usize) u16 {
+    return (@as(u16, frame[offset]) << 8) | frame[offset + 1];
+}
+
+/// Encode FC05. True is represented by 0xff00, false by 0x0000.
+pub fn encode_write_single_coil_request(transaction_id: u16, unit_id: u8, address: u16, value: bool, out: []u8) !usize {
+    return encode_write_single_request(5, transaction_id, unit_id, address, if (value) 0xff00 else 0, out);
+}
+
+/// Encode FC06 with a big-endian holding-register value.
+pub fn encode_write_single_register_request(transaction_id: u16, unit_id: u8, address: u16, value: u16, out: []u8) !usize {
+    return encode_write_single_request(6, transaction_id, unit_id, address, value, out);
+}
+
+fn encode_write_single_request(function: u8, transaction_id: u16, unit_id: u8, address: u16, value: u16, out: []u8) !usize {
+    if (out.len < 12) return error.BufferTooSmall;
+    try encode_mbap_header(transaction_id, 0, 6, unit_id, out);
+    out[7] = function;
+    put_u16(out, 8, address);
+    put_u16(out, 10, value);
+    return 12;
+}
+
+/// Encode FC15, packing 1–1968 coils LSB first and zeroing final-byte padding.
+pub fn encode_write_multiple_coils_request(transaction_id: u16, unit_id: u8, address: u16, values: []const bool, out: []u8) !usize {
+    return encode_write_multiple_request(15, transaction_id, unit_id, address, values, out);
+}
+
+/// Encode FC16 for 1–123 holding registers in ascending address order.
+pub fn encode_write_multiple_registers_request(transaction_id: u16, unit_id: u8, address: u16, values: []const u16, out: []u8) !usize {
+    return encode_write_multiple_request(16, transaction_id, unit_id, address, values, out);
+}
+
+fn encode_write_multiple_request(comptime function: u8, transaction_id: u16, unit_id: u8, address: u16, values: []const if (function == 15) bool else u16, out: []u8) !usize {
+    const limit = if (function == 15) max_write_coil_count else max_write_register_count;
+    if (values.len == 0 or values.len > limit) return error.InvalidQuantity;
+    if (@as(usize, address) + values.len > 65536) return error.InvalidAddressRange;
+    const byte_count = if (function == 15) (values.len + 7) / 8 else values.len * 2;
+    const length = 13 + byte_count;
+    if (out.len < length) return error.BufferTooSmall;
+    try encode_mbap_header(transaction_id, 0, @intCast(length - 6), unit_id, out);
+    out[7] = function;
+    put_u16(out, 8, address);
+    put_u16(out, 10, @intCast(values.len));
+    out[12] = @intCast(byte_count);
+    if (function == 15) {
+        @memset(out[13..length], 0);
+        for (values, 0..) |value, index| {
+            if (value) out[13 + index / 8] |= @as(u8, 1) << @as(u3, @intCast(index % 8));
+        }
+    } else {
+        for (values, 0..) |value, index| put_u16(out, 13 + index * 2, value);
+    }
+    return length;
+}
+
+/// Validate the complete acknowledgment, including the echoed address and value.
+/// Returns the acknowledged element count; matching exceptions return error.ModbusException.
+pub fn decode_write_single_coil_response(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8, address: u16, value: bool) !usize {
+    return decode_write_response(5, frame, expected_transaction_id, expected_unit_id, address, if (value) 0xff00 else 0);
+}
+
+/// Validate the complete acknowledgment, including the echoed address and value.
+/// Returns the acknowledged element count; matching exceptions return error.ModbusException.
+pub fn decode_write_single_register_response(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8, address: u16, value: u16) !usize {
+    return decode_write_response(6, frame, expected_transaction_id, expected_unit_id, address, value);
+}
+
+/// Validate the complete acknowledgment, including the echoed address and quantity.
+/// Returns the acknowledged element count; matching exceptions return error.ModbusException.
+pub fn decode_write_multiple_coils_response(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8, address: u16, quantity: u16) !usize {
+    if (quantity == 0 or quantity > max_write_coil_count) return error.InvalidQuantity;
+    if (@as(usize, address) + quantity > 65536) return error.InvalidAddressRange;
+    return decode_write_response(15, frame, expected_transaction_id, expected_unit_id, address, quantity);
+}
+
+/// Validate the complete acknowledgment, including the echoed address and quantity.
+/// Returns the acknowledged element count; matching exceptions return error.ModbusException.
+pub fn decode_write_multiple_registers_response(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8, address: u16, quantity: u16) !usize {
+    if (quantity == 0 or quantity > max_write_register_count) return error.InvalidQuantity;
+    if (@as(usize, address) + quantity > 65536) return error.InvalidAddressRange;
+    return decode_write_response(16, frame, expected_transaction_id, expected_unit_id, address, quantity);
+}
+
+fn decode_write_response(function: u8, frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8, address: u16, value_or_quantity: u16) !usize {
+    const header = try decode_mbap_header(frame);
+    if (header.transaction_id != expected_transaction_id) return error.TransactionIdMismatch;
+    if (header.protocol_id != 0) return error.InvalidProtocolId;
+    if (header.unit_id != expected_unit_id) return error.UnitIdMismatch;
+    if (header.length < 3 or frame.len != 6 + @as(usize, header.length)) return error.InvalidLength;
+    if (frame[7] == (function | 0x80)) {
+        _ = try decode_exception_response(frame, expected_transaction_id, expected_unit_id);
+        return error.ModbusException;
+    }
+    if (frame[7] != function) return error.InvalidFunctionCode;
+    if (header.length != 6) return error.InvalidLength;
+    if (get_u16(frame, 8) != address) return error.AddressMismatch;
+    if (get_u16(frame, 10) != value_or_quantity) return error.WriteEchoMismatch;
+    return if (function == 5 or function == 6) 1 else value_or_quantity;
 }
 
 pub fn decode_exception_response(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8) !ModbusException {
@@ -286,10 +404,16 @@ pub fn decode_modbus_error(frame: []const u8, expected_transaction_id: u16, expe
     };
 }
 
+/// Validate a complete response and decode big-endian registers into out.
+/// Returns the response count; the caller must compare it with the requested quantity.
+/// Matching server exceptions return error.ModbusException.
 pub fn decode_read_holding_registers_response(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8, out: []u16) !usize {
     return decode_read_registers_response(3, frame, expected_transaction_id, expected_unit_id, out);
 }
 
+/// Validate a complete response and decode big-endian registers into out.
+/// Returns the response count; the caller must compare it with the requested quantity.
+/// Matching server exceptions return error.ModbusException.
 pub fn decode_read_input_registers_response(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8, out: []u16) !usize {
     return decode_read_registers_response(4, frame, expected_transaction_id, expected_unit_id, out);
 }
@@ -311,6 +435,7 @@ fn decode_read_registers_response(expected_function: u8, frame: []const u8, expe
     if (header.protocol_id != 0) return error.InvalidProtocolId;
     if (header.unit_id != expected_unit_id) return error.UnitIdMismatch;
     if (header.length < 3) return error.InvalidLength;
+    // Widen before adding: untrusted u16 lengths may be close to 65535.
     if (frame.len != 6 + @as(usize, header.length)) return error.InvalidLength;
     if (frame.len < 9) return error.InvalidLength;
 
@@ -322,6 +447,7 @@ fn decode_read_registers_response(expected_function: u8, frame: []const u8, expe
     }
     if (function_code != expected_function) return error.InvalidFunctionCode;
 
+    // A valid 125-register response has 250 data bytes; adding its prefix in u8 overflows.
     const byte_count: usize = frame[8];
     if (byte_count == 0 or (byte_count % 2) != 0) return error.InvalidByteCount;
     if (frame.len != 9 + byte_count) return error.InvalidLength;
@@ -347,6 +473,7 @@ fn decode_read_bits_response(expected_function: u8, frame: []const u8, expected_
         return error.ModbusException;
     }
     if (frame[7] != expected_function) return error.InvalidFunctionCode;
+    // The response carries only a byte count, so quantity determines which trailing bits are padding.
     const byte_count = (@as(usize, quantity) + 7) / 8;
     if (frame[8] != byte_count) return error.InvalidByteCount;
     if (frame.len != 9 + byte_count) return error.InvalidLength;
@@ -526,4 +653,69 @@ test "read decoders reject overflowing MBAP lengths" {
     try std.testing.expectError(error.InvalidLength, decode_read_holding_registers_response(&frame, 0, 1, &registers));
     try std.testing.expectError(error.InvalidLength, decode_read_coils_response(&frame, 0, 1, 1, &bits));
     try std.testing.expectError(error.InvalidLength, decode_read_discrete_inputs_response(&frame, 0, 1, 1, &bits));
+}
+
+test "write request wire formats and padding" {
+    var out: [max_adu_length]u8 = @splat(0xff);
+    try std.testing.expectEqual(@as(usize, 12), try encode_write_single_coil_request(0x1234, 7, 0xabcd, true, &out));
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x34, 0, 0, 0, 6, 7, 5, 0xab, 0xcd, 0xff, 0 }, out[0..12]);
+    _ = try encode_write_single_coil_request(0, 1, 0, false, &out);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0 }, out[10..12]);
+    _ = try encode_write_single_register_request(0, 1, 10, 0x8001, &out);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0, 6, 1, 6, 0, 10, 0x80, 1 }, out[0..12]);
+    const coils = [_]bool{ true, false, false, false, false, false, false, true, true };
+    try std.testing.expectEqual(@as(usize, 15), try encode_write_multiple_coils_request(0, 1, 7, &coils, &out));
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0, 9, 1, 15, 0, 7, 0, 9, 2, 0x81, 1 }, out[0..15]);
+    try std.testing.expectEqual(@as(usize, 17), try encode_write_multiple_registers_request(0, 1, 10, &.{ 0x1234, 0xabcd }, &out));
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 0, 11, 1, 16, 0, 10, 0, 2, 4, 0x12, 0x34, 0xab, 0xcd }, out[0..17]);
+}
+
+test "write encoders validate quantities, address ranges and output capacity" {
+    var out: [max_adu_length]u8 = undefined;
+    try std.testing.expectError(error.BufferTooSmall, encode_write_single_coil_request(0, 1, 0, true, out[0..11]));
+    try std.testing.expectError(error.BufferTooSmall, encode_write_single_register_request(0, 1, 0, 1, out[0..11]));
+    inline for (.{ encode_write_multiple_coils_request, encode_write_multiple_registers_request }, .{ bool, u16 }, .{ max_write_coil_count, max_write_register_count }) |encode, T, limit| {
+        const values: [limit + 1]T = @splat(if (T == bool) true else 0xffff);
+        try std.testing.expectError(error.InvalidQuantity, encode(0, 1, 0, values[0..0], &out));
+        try std.testing.expectError(error.InvalidQuantity, encode(0, 1, 0, &values, &out));
+        try std.testing.expectError(error.InvalidAddressRange, encode(0, 1, 65535, values[0..2], &out));
+        try std.testing.expectError(error.BufferTooSmall, encode(0, 1, 0, values[0..limit], out[0..258]));
+        try std.testing.expectEqual(@as(usize, 259), try encode(0, 1, 0, values[0..limit], &out));
+        _ = try encode(0, 1, 65535, values[0..1], &out);
+    }
+}
+
+test "write acknowledgments reject mismatches and preserve exception errors" {
+    inline for (.{ decode_write_single_coil_response, decode_write_single_register_response, decode_write_multiple_coils_response, decode_write_multiple_registers_response }, .{ @as(u8, 5), @as(u8, 6), @as(u8, 15), @as(u8, 16) }) |decode, function| {
+        const expected = if (function == 5) true else @as(u16, 9);
+        const wire_value: u16 = if (function == 5) 0xff00 else 9;
+        var frame = [_]u8{ 0, 1, 0, 0, 0, 6, 7, function, 0, 10, @intCast(wire_value >> 8), @truncate(wire_value) };
+        try std.testing.expectEqual(@as(usize, if (function <= 6) 1 else 9), try decode(&frame, 1, 7, 10, expected));
+        try std.testing.expectError(error.TransactionIdMismatch, decode(&frame, 2, 7, 10, expected));
+        try std.testing.expectError(error.UnitIdMismatch, decode(&frame, 1, 1, 10, expected));
+        frame[3] = 1;
+        try std.testing.expectError(error.InvalidProtocolId, decode(&frame, 1, 7, 10, expected));
+        frame[3] = 0;
+        try std.testing.expectError(error.AddressMismatch, decode(&frame, 1, 7, 11, expected));
+        frame[11] ^= 1;
+        try std.testing.expectError(error.WriteEchoMismatch, decode(&frame, 1, 7, 10, expected));
+        frame[11] ^= 1;
+        try std.testing.expectError(error.InvalidLength, decode(frame[0..11], 1, 7, 10, expected));
+        frame[7] = 3;
+        try std.testing.expectError(error.InvalidFunctionCode, decode(&frame, 1, 7, 10, expected));
+        frame[7] = function | 0x80;
+        frame[5] = 3;
+        frame[8] = 2;
+        try std.testing.expectError(error.ModbusException, decode(frame[0..9], 1, 7, 10, expected));
+        frame[7] = 0x84;
+        try std.testing.expectError(error.InvalidFunctionCode, decode(frame[0..9], 1, 7, 10, expected));
+    }
+}
+
+test "multiple-write decoders reject impossible expected quantities and ranges" {
+    inline for (.{ decode_write_multiple_coils_response, decode_write_multiple_registers_response }, .{ @as(u16, 1968), @as(u16, 123) }) |decode, limit| {
+        try std.testing.expectError(error.InvalidQuantity, decode(&.{}, 0, 1, 0, 0));
+        try std.testing.expectError(error.InvalidQuantity, decode(&.{}, 0, 1, 0, limit + 1));
+        try std.testing.expectError(error.InvalidAddressRange, decode(&.{}, 0, 1, 65535, 2));
+    }
 }

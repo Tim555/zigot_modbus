@@ -20,6 +20,7 @@ SIZE = 4096
 
 
 def value(function, address, unit):
+    """Seed address-dependent patterns that expose offsets, bit order and high-bit errors."""
     if function <= 2:
         return int(((address * 13 + address // 7 + unit + function) % 11) < 5)
     edges = [0, 1, 0x7FFF, 0x8000, 0xFFFF, 0x1234, 0xABCD]
@@ -27,15 +28,18 @@ def value(function, address, unit):
 
 
 def context():
+    """Keep all four spaces and both units distinct; unmapped addresses raise exceptions."""
     devices = {}
     for unit in (1, 7):
         blocks = {name: ModbusSparseDataBlock({i: value(fc, i, unit) for i in range(SIZE)})
                   for fc, name in ((1, "co"), (2, "di"), (3, "hr"), (4, "ir"))}
+        # Disable PyModbus's default +1 translation: fixtures use wire addresses directly.
         devices[unit] = ModbusSlaveContext(**blocks, zero_mode=True)
     return ModbusServerContext(slaves=devices, single=False)
 
 
 def cases(seed, random_cases):
+    """Combine boundary reads and seeded random reads, then mix functions and units."""
     result = []
     rng = random.Random(seed)
     for function in (1, 2, 3, 4):
@@ -51,11 +55,56 @@ def cases(seed, random_cases):
             # Illegal address, including a read crossing the end of the datastore.
             for address, quantity in ((SIZE, 1), (SIZE - 1, 2), (65535, 1)):
                 result.append(dict(function=function, unit=unit, address=address, quantity=quantity, exception=2))
+    # Interleave valid reads and exceptions to exercise connection reuse after exceptions.
     rng.shuffle(result)
     return result
 
 
-def run_clients(args, port, vectors, artifacts):
+def write_cases(seed):
+    """Exercise write boundaries; retain inputs for independent post-write readback."""
+    rng = random.Random(seed)
+    result = []
+    for unit in (1, 7):
+        for function, quantities in ((5, (1,)), (6, (1,)), (15, (1, 7, 8, 9, 1967, 1968)), (16, (1, 2, 122, 123))):
+            for quantity in quantities:
+                for address in (0, 7, SIZE - quantity):
+                    values = [rng.randrange(2 if function in (5, 15) else 65536) for _ in range(quantity)]
+                    # Explicitly cover both single-coil states and high register bits.
+                    if function == 5:
+                        values = [int(address == 7)]
+                    elif function == 6:
+                        values = [{0: 0, 7: 0x8000}.get(address, 0xffff)]
+                    result.append(dict(function=function, unit=unit, address=address, quantity=quantity, values=values))
+            for address in (SIZE, 65535):
+                result.append(dict(function=function, unit=unit, address=address, quantity=1, values=[1], exception=2))
+    return result
+
+
+def verify_writes(client, writes):
+    """Replay successful writes in a model, then inspect final state with PyModbus."""
+    model = {}
+    for case in writes:
+        if case.get("exception"):
+            continue
+        space = 1 if case["function"] in (5, 15) else 3
+        for offset, value in enumerate(case["values"]):
+            model[(case["unit"], space, case["address"] + offset)] = value
+    for case in writes:
+        if case.get("exception"):
+            continue
+        space = 1 if case["function"] in (5, 15) else 3
+        method = client.read_coils if space == 1 else client.read_holding_registers
+        response = method(case["address"], count=case["quantity"], slave=case["unit"])
+        if response.isError():
+            raise AssertionError((case, str(response)))
+        actual = response.bits[:case["quantity"]] if space == 1 else response.registers
+        expected = [model[(case["unit"], space, case["address"] + i)] for i in range(case["quantity"])]
+        if actual != expected:
+            raise AssertionError((case, actual, expected))
+
+
+def run_clients(args, port, vectors, writes, artifacts):
+    """Validate the reference reads before exporting their values to the Zig test."""
     methods = {1: "read_coils", 2: "read_discrete_inputs", 3: "read_holding_registers", 4: "read_input_registers"}
     client = ModbusTcpClient("127.0.0.1", port=port, timeout=2, retries=0)
     if not client.connect():
@@ -84,6 +133,12 @@ def run_clients(args, port, vectors, artifacts):
         values = ",".join(map(str, case["values"]))
         source.append('.{ .function = %d, .unit = %d, .address = %d, .quantity = %d, .exception = %d, .values = &.{%s} },' % (case["function"], case["unit"], case["address"], case["quantity"], case.get("exception", 0), values))
     source.append('};')
+    source.append('pub const writes: []const Case = &.{')
+    for case in writes:
+        values = ",".join(map(str, case["values"]))
+        source.append('.{ .function = %d, .unit = %d, .address = %d, .quantity = %d, .exception = %d, .values = &.{%s} },' % (case["function"], case["unit"], case["address"], case["quantity"], case.get("exception", 0), values))
+    source.append('};')
+    (artifacts / "write-vectors.json").write_text(json.dumps(writes, indent=2) + "\n")
     fixture = artifacts / "vectors.zig"
     fixture.write_text("\n".join(source) + "\n")
     command = [args.zig, "build", "interop-test", f"-Dinterop-port={port}", f"-Dinterop-vectors={fixture}", f"-Doptimize={args.optimize}", "--summary", "all"]
@@ -93,6 +148,12 @@ def run_clients(args, port, vectors, artifacts):
     (artifacts / "zig.log").write_text(result.stdout + result.stderr)
     print(result.stdout + result.stderr, end="", flush=True)
     result.check_returncode()
+    if not client.connect():
+        raise RuntimeError("reference client failed to reconnect for write readback")
+    try:
+        verify_writes(client, writes)
+    finally:
+        client.close()
 
 
 async def run(args):
@@ -101,16 +162,19 @@ async def run(args):
     artifacts = Path(args.artifacts or tempfile.mkdtemp(prefix="modbus-interop-")).resolve()
     artifacts.mkdir(parents=True, exist_ok=True)
     vectors = cases(args.seed, args.random_cases)
+    writes = write_cases(args.seed)
     (artifacts / "input-cases.json").write_text(json.dumps(vectors, indent=2) + "\n")
+    # Port zero lets the OS allocate a free port without a reserve/rebind race.
     server = ModbusTcpServer(context(), address=("127.0.0.1", 0))
     started = time.monotonic()
-    report = dict(stack=f"pymodbus=={VERSION}", seed=args.seed, cases=len(vectors), optimize=args.optimize, status="failed")
+    report = dict(stack=f"pymodbus=={VERSION}", seed=args.seed, cases=len(vectors), write_cases=len(writes), optimize=args.optimize, status="failed")
     try:
         if not await server.listen():
             raise RuntimeError("PyModbus server failed to listen")
         port = server.transport.sockets[0].getsockname()[1]
         print(f"PyModbus {VERSION} on 127.0.0.1:{port}; {len(vectors)} cases; artifacts: {artifacts}", flush=True)
-        await asyncio.to_thread(run_clients, args, port, vectors, artifacts)
+        # Blocking client calls and Zig compilation must not stall the server event loop.
+        await asyncio.to_thread(run_clients, args, port, vectors, writes, artifacts)
         report["status"] = "passed"
     except Exception as exc:
         report["error"] = str(exc)

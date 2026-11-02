@@ -161,6 +161,34 @@ first on the wire; final-byte padding is ignored. Each method also has a
 `Detailed` variant returning a count or the complete Modbus exception payload.
 Responses must contain exactly the requested number of registers or packed bytes.
 
+## TCP write operations
+
+The synchronous client supports the standard single and multiple writes:
+
+| Method | Function | Value argument | Successful return |
+| --- | --- | --- | --- |
+| `writeSingleCoil(address, value, unit_id)` | FC05 | `bool` | `1` |
+| `writeSingleRegister(address, value, unit_id)` | FC06 | `u16` | `1` |
+| `writeMultipleCoils(address, values, unit_id)` | FC15 | `[]const bool`, 1–1968 values | `values.len` |
+| `writeMultipleRegisters(address, values, unit_id)` | FC16 | `[]const u16`, 1–123 values | `values.len` |
+
+Addresses are zero-based wire offsets. Registers are holding registers; input
+registers and discrete inputs are read-only. Each method has a `Detailed`
+variant returning `WriteResult` (`.count` or the complete `.exception`). The
+simple variants return `error.ModbusException` for server exceptions.
+
+```zig
+_ = try client.writeSingleCoil(10, true, 1);
+_ = try client.writeSingleRegister(20, 0x1234, 1);
+_ = try client.writeMultipleCoils(10, &.{ true, false, true }, 1);
+_ = try client.writeMultipleRegisters(20, &.{ 0x1234, 0xabcd }, 1);
+```
+
+Writes validate the acknowledgment's function, address, and echoed value or
+quantity. Invalid quantities and ranges extending beyond address 65535 fail
+before transmission. Writes are never retried automatically: a timeout or
+connection failure can occur after the server has applied the write.
+
 ## Interoperability and decoder robustness
 
 The optional interop harness runs a real **PyModbus 3.6.9** TCP server and its
@@ -179,12 +207,14 @@ zig build fuzz-smoke
 An existing `test_server/.venv` with the pinned dependency can be used instead.
 The harness accepts `--zig PATH`, `--zig-cache-dir PATH`, `--seed N`, and
 `--random-cases N` (per function/unit pair). It retains reference vectors, a
-JSON report, and Zig output in the artifact directory. The default 352 cases
+JSON report, and Zig output in the artifact directory. The default 352 read cases
 cover all four read functions, two units, maximum quantities, bit boundaries,
-illegal addresses, transaction rollover, and reconnects. These tests are
+illegal addresses, transaction rollover, and reconnects. Another 88 write cases
+cover FC05/06/15/16, with immediate Zig readback and independent PyModbus
+readback of the final state. These tests are
 opt-in; `zig build test` requires no Python server.
 
-`fuzz-smoke` runs 20,000 deterministic decoder mutations and six oversized
+`fuzz-smoke` runs 20,000 deterministic read/write decoder mutations and six oversized
 MBAP-length cases with runtime safety checks. It complements valid-request
 interop tests; it is not a coverage-guided fuzz campaign. The reusable
 [`modbus-interop` skill](skills/modbus-interop/SKILL.md) describes the workflow

@@ -289,3 +289,7 @@ test "new TCP reads reject invalid requests and mismatched responses" {
         try std.testing.expectError(error.NotConnected, read(&client, 0, 1, 1, &out));
     }
 }
+
+test {
+    _ = @import("writes.zig");
+}
