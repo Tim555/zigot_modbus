@@ -293,3 +293,7 @@ test "new TCP reads reject invalid requests and mismatched responses" {
 test {
     _ = @import("writes.zig");
 }
+
+test {
+    _ = @import("server.zig");
+}

@@ -1,11 +1,14 @@
 //! Transport-independent Modbus codecs, a reusable blocking TCP transport,
-//! and a synchronous Modbus TCP client. Serial I/O remains caller-supplied.
+//! a synchronous Modbus TCP client, and a concurrent TCP server. Serial I/O
+//! remains caller-supplied.
 pub const rtu = @import("rtu.zig");
 pub const modbus_codec = @import("modbus_codec.zig");
 /// Compatibility alias; prefer modbus_codec for MBAP and PDU codecs.
 pub const tcp = modbus_codec;
 pub const modbus_tcp = @import("modbus_tcp.zig");
 pub const tcp_transport = @import("tcp_transport.zig");
+pub const tcp_server = @import("tcp_server.zig");
+pub const TcpServer = tcp_server.TcpServer;
 pub const TcpClient = tcp_transport.TcpClient;
 pub const SyncTcpModbusClient = modbus_tcp.SyncTcpModbusClient;
 pub const TcpModbusClient = modbus_tcp.TcpModbusClient;
@@ -28,4 +31,5 @@ test {
     _ = modbus_codec;
     _ = modbus_tcp;
     _ = tcp_transport;
+    _ = tcp_server;
 }
