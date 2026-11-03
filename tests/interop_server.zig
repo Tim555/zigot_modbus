@@ -7,7 +7,7 @@ pub fn main(init: std.process.Init) !void {
     var holding: [2][4096]u16 = @splat(@splat(0));
     const inputs: [4096]u16 = @splat(0x1234);
     const discrete: [4096]bool = @splat(true);
-    const devices = [_]modbus.tcp_server.Device{
+    const devices = [_]modbus.Device{
         .{ .unit_id = 1, .coils = &coils[0], .holding_registers = &holding[0], .input_registers = &inputs, .discrete_inputs = &discrete },
         .{ .unit_id = 7, .coils = &coils[1], .holding_registers = &holding[1], .input_registers = &inputs, .discrete_inputs = &discrete },
     };

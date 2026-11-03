@@ -241,16 +241,21 @@ That import exposes the complete public library:
 | `SyncTcpModbusClient` | Synchronous Modbus TCP read/write client |
 | `TcpServer` | Concurrent Modbus TCP server |
 | `TcpClient` | Protocol-independent blocking TCP byte transport |
-| `modbus_tcp` | Client result types, limits, and implementation module |
-| `tcp_server` | `Device`, server `Options`, and implementation module |
-| `tcp_transport` | TCP transport module and its options |
+| `Device`, `TcpServerOptions` | Server unit tables and configuration |
+| `ReadResult`, `WriteResult` | Detailed operation counts or server exceptions |
+| `max_register_count`, `max_bit_count` | Read quantity limits |
 | `modbus_codec` | MBAP headers, TCP request encoders, response decoders, exceptions |
 | `rtu` | CRC-16/MODBUS primitive |
 | `FunctionCode` | Enum naming the eight supported functions |
 | `max_pdu_length` | Maximum PDU size, 253 bytes |
 
-`TcpModbusClient` is a compatibility alias for `SyncTcpModbusClient`; `tcp` is a
-compatibility alias for `modbus_codec`. Prefer the explicit names in new code.
+Transport options are available as `TcpClient.Options`. Implementation modules
+are private. The former `TcpModbusClient`, `tcp`, and per-function read-result
+aliases have been removed; use `SyncTcpModbusClient`, `modbus_codec`, and
+`ReadResult` respectively. Former `modbus_tcp.ReadResult`/`WriteResult` and
+`tcp_server.Device`/`Options` are now `ReadResult`/`WriteResult` and
+`Device`/`TcpServerOptions` at the package root. Read limits are also at the
+root; write limits live in `modbus_codec`.
 Including the module does not require using the repository's CLI or server
 executable in your application.
 
@@ -321,7 +326,7 @@ switch (result) {
 ```
 
 All eight operations have this variant, including
-`writeMultipleRegistersDetailed`. `modbus_tcp.ReadResult` and `WriteResult`
+`writeMultipleRegistersDetailed`. `modbus.ReadResult` and `modbus.WriteResult`
 contain either `.count` or `.exception`. The exception includes its code/kind,
 transaction ID, unit ID, parsed MBAP header, and raw PDU/frame storage. Use
 `pdu[0..pdu_len]` and `raw_frame[0..raw_frame_len]` for the valid bytes.
@@ -349,7 +354,7 @@ const modbus = @import("zigot_modbus");
 pub fn main(init: std.process.Init) !void {
     var coils: [2000]bool = @splat(false);
     var registers: [125]u16 = @splat(0);
-    const devices = [_]modbus.tcp_server.Device{.{
+    const devices = [_]modbus.Device{.{
         .unit_id = 1,
         .coils = &coils,
         .holding_registers = &registers,
@@ -389,7 +394,7 @@ read/write atomic across clients. Network reads and writes do not hold that mute
 | `read_timeout` | 30 seconds | Budget per complete header/payload receive |
 | `write_timeout` | 5 seconds | Budget for sending a complete response |
 
-Pass these through `tcp_server.Options` to `TcpServer.init`. Timeout fields use
+Pass these through `TcpServerOptions` to `TcpServer.init`. Timeout fields use
 `std.Io.Timeout`; `.none` disables a timeout. Port 0 selects a free port, which
 `server.port()` returns. Unknown unit IDs receive exception 0x0b. Invalid
 functions, values, and addresses receive protocol exceptions; malformed MBAP

@@ -15,13 +15,6 @@ pub const ReadResult = union(enum) {
 
 /// Acknowledged element count or the complete server exception.
 pub const WriteResult = ReadResult;
-pub const max_write_coil_count = codec.max_write_coil_count;
-pub const max_write_register_count = codec.max_write_register_count;
-
-pub const ReadHoldingRegisterResult = ReadResult;
-pub const ReadInputRegisterResult = ReadResult;
-pub const ReadCoilsResult = ReadResult;
-pub const ReadDiscreteInputsResult = ReadResult;
 
 /// Blocking Modbus TCP client with caller-owned output buffers.
 /// Read addresses are zero-based wire offsets, not 3xxxx/4xxxx reference numbers.
@@ -266,8 +259,6 @@ pub const SyncTcpModbusClient = struct {
         return id;
     }
 };
-
-pub const TcpModbusClient = SyncTcpModbusClient;
 
 test "transaction_id wraps correctly" {
     var client = SyncTcpModbusClient.init(std.testing.io);

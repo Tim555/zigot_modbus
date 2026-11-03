@@ -11,7 +11,7 @@ fn write(client: *modbus.SyncTcpModbusClient, comptime function: u8, address: u1
     };
 }
 
-fn writeDetailed(client: *modbus.SyncTcpModbusClient, comptime function: u8) !modbus.modbus_tcp.WriteResult {
+fn writeDetailed(client: *modbus.SyncTcpModbusClient, comptime function: u8) !modbus.WriteResult {
     return switch (function) {
         5 => client.writeSingleCoilDetailed(10, true, 7),
         6 => client.writeSingleRegisterDetailed(10, 0x8001, 7),

@@ -11,7 +11,7 @@ test "TCP server supports all functions, limits, unit routing and exceptions" {
     var holding: [125]u16 = @splat(0);
     const inputs = [_]u16{ 0x1234, 0xffff };
     const discrete = [_]bool{ true, false, true };
-    const devices = [_]modbus.tcp_server.Device{
+    const devices = [_]modbus.Device{
         .{ .unit_id = 1, .coils = &coils, .holding_registers = &holding, .input_registers = &inputs, .discrete_inputs = &discrete },
         .{ .unit_id = 7, .input_registers = &.{42} },
     };
@@ -52,7 +52,7 @@ test "TCP server supports all functions, limits, unit routing and exceptions" {
 
 test "concurrent clients observe atomic register writes while another peer is incomplete" {
     var holding: [123]u16 = @splat(0);
-    const devices = [_]modbus.tcp_server.Device{.{ .unit_id = 1, .holding_registers = &holding }};
+    const devices = [_]modbus.Device{.{ .unit_id = 1, .holding_registers = &holding }};
     var server = try modbus.TcpServer.init(io, "127.0.0.1", 0, &devices, .{ .max_clients = 10 });
     defer server.deinit();
     var task = try io.concurrent(runServer, .{&server});
@@ -94,7 +94,7 @@ test "concurrent clients observe atomic register writes while another peer is in
 
 test "TCP server handles fragmented and pipelined frames and isolates malformed peers" {
     var holding = [_]u16{ 12, 13 };
-    const devices = [_]modbus.tcp_server.Device{.{ .unit_id = 1, .holding_registers = &holding }};
+    const devices = [_]modbus.Device{.{ .unit_id = 1, .holding_registers = &holding }};
     var server = try modbus.TcpServer.init(io, "127.0.0.1", 0, &devices, .{});
     defer server.deinit();
     var task = try io.concurrent(runServer, .{&server});
@@ -134,7 +134,7 @@ test "TCP server handles fragmented and pipelined frames and isolates malformed 
 
 test "client limit releases slots and cancellation closes idle accepted sockets" {
     var registers = [_]u16{0};
-    const devices = [_]modbus.tcp_server.Device{.{ .unit_id = 1, .holding_registers = &registers }};
+    const devices = [_]modbus.Device{.{ .unit_id = 1, .holding_registers = &registers }};
     var server = try modbus.TcpServer.init(io, "127.0.0.1", 0, &devices, .{ .max_clients = 1 });
     defer server.deinit();
     var task = try io.concurrent(runServer, .{&server});
@@ -163,7 +163,7 @@ test "client limit releases slots and cancellation closes idle accepted sockets"
 }
 
 test "partial request timeout closes the peer without stopping the server" {
-    const devices = [_]modbus.tcp_server.Device{.{ .unit_id = 1, .input_registers = &.{42} }};
+    const devices = [_]modbus.Device{.{ .unit_id = 1, .input_registers = &.{42} }};
     var server = try modbus.TcpServer.init(io, "127.0.0.1", 0, &devices, .{
         .read_timeout = .{ .duration = .{ .raw = .fromMilliseconds(50), .clock = .awake } },
     });

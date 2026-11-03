@@ -7,7 +7,7 @@ pub fn main(init: std.process.Init) !void {
     var registers: [125]u16 = @splat(0);
     registers[10] = 12;
     registers[11] = 13;
-    const devices = [_]modbus.tcp_server.Device{.{
+    const devices = [_]modbus.Device{.{
         .unit_id = 1,
         .coils = &coils,
         .holding_registers = &registers,

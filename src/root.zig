@@ -3,15 +3,19 @@
 //! remains caller-supplied.
 pub const rtu = @import("rtu.zig");
 pub const modbus_codec = @import("modbus_codec.zig");
-/// Compatibility alias; prefer modbus_codec for MBAP and PDU codecs.
-pub const tcp = modbus_codec;
-pub const modbus_tcp = @import("modbus_tcp.zig");
-pub const tcp_transport = @import("tcp_transport.zig");
-pub const tcp_server = @import("tcp_server.zig");
+const modbus_tcp = @import("modbus_tcp.zig");
+const tcp_transport = @import("tcp_transport.zig");
+const tcp_server = @import("tcp_server.zig");
 pub const TcpServer = tcp_server.TcpServer;
 pub const TcpClient = tcp_transport.TcpClient;
 pub const SyncTcpModbusClient = modbus_tcp.SyncTcpModbusClient;
-pub const TcpModbusClient = modbus_tcp.TcpModbusClient;
+/// Caller-owned tables for one server unit.
+pub const Device = tcp_server.Device;
+pub const TcpServerOptions = tcp_server.Options;
+pub const ReadResult = modbus_tcp.ReadResult;
+pub const WriteResult = modbus_tcp.WriteResult;
+pub const max_register_count = modbus_tcp.max_register_count;
+pub const max_bit_count = modbus_tcp.max_bit_count;
 pub const max_pdu_length = 253;
 
 pub const FunctionCode = enum(u8) {
