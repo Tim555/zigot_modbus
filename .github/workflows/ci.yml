@@ -1,34 +1,56 @@
 name: CI
+
 on:
   push:
   pull_request:
   workflow_dispatch:
+
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  format:
+    name: Formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - name: Check formatting
-        run: zig fmt --check build.zig build.zig.zon src tests
-      - name: Build example
-        run: zig build
-      - name: Test Debug
-        run: zig build test
-      - name: Test ReleaseSafe
-        run: zig build test -Doptimize=ReleaseSafe
-      - name: Cross-compile tests
-        run: zig build check -Dtarget=aarch64-linux
-  rtu-interop:
+      - run: zig fmt --check build.zig build.zig.zon src tests
+
+  test:
+    name: Tests (${{ matrix.os }}, ${{ matrix.optimize }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        optimize: [Debug, ReleaseSafe]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build CLI and development server
+        run: zig build -Doptimize=${{ matrix.optimize }} --summary all
+      - name: Library, public API, CLI, TCP server, and RTU tests
+        if: ${{ !cancelled() }}
+        run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
+      - name: Decoder mutation smoke tests
+        if: ${{ !cancelled() }}
+        run: zig build fuzz-smoke -Doptimize=${{ matrix.optimize }} --summary all
+
+  cross-compile:
+    name: Cross-compile aarch64-linux (${{ matrix.optimize }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -38,15 +60,48 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+      - run: zig build check -Dtarget=aarch64-linux -Doptimize=${{ matrix.optimize }} --summary all
+
+  interop:
+    name: Interop (${{ matrix.suite.name }}, ${{ matrix.optimize }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        optimize: [Debug, ReleaseSafe]
+        suite:
+          - name: tcp-client
+            script: test_server/interop.py
+            args: ''
+          - name: rtu-client
+            script: test_server/interop.py
+            args: --rtu
+          - name: tcp-server
+            script: test_server/server_interop.py
+            args: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: test_server/interop-requirements.txt
       - name: Install independent Modbus stack
         run: python -m pip install -r test_server/interop-requirements.txt
-      - name: Test RTU interoperability
-        run: python test_server/interop.py --rtu --optimize ${{ matrix.optimize }} --artifacts interop-artifacts
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Run independent-stack interoperability tests
+        run: python ${{ matrix.suite.script }} ${{ matrix.suite.args }} --optimize ${{ matrix.optimize }} --artifacts interop-artifacts
+      - name: Retain interoperability reports and logs
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
-          name: rtu-interop-${{ matrix.optimize }}
-          path: interop-artifacts
+          name: interop-${{ matrix.suite.name }}-${{ matrix.optimize }}
+          path: |
+            interop-artifacts/*.json
+            interop-artifacts/*.log
+            interop-artifacts/*.zig
+          retention-days: 14
+          if-no-files-found: warn

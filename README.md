@@ -557,10 +557,19 @@ zig fmt --check build.zig build.zig.zon src tests
 
 The normal tests require no Python server. They include local loopback networking,
 read/write behavior, server concurrency, fragmentation, pipelining, connection
-limits, timeouts, and cancellation. CI is configured for Linux, Windows, and
-macOS, including Debug/ReleaseSafe tests and an aarch64-linux compilation check.
-A Linux RTU interoperability job runs both optimization modes and retains reports
-and vectors as CI artifacts.
+limits, timeouts, and cancellation. CI runs on every push, pull request, and manual dispatch:
+
+- Formatting runs once on Linux.
+- Linux, Windows, and macOS each build both executables and run the complete
+  regular test suite plus decoder mutation smoke tests in Debug and ReleaseSafe.
+- Linux cross-compiles the test suites for aarch64-linux in both modes.
+- Separate Linux jobs run TCP client, RTU client, and TCP server interoperability
+  against pinned PyModbus in both modes. These jobs retain reports, logs, and
+  generated vectors (for client suites) for 14 days, including failed runs.
+
+Matrix failures do not cancel other suites. A newer push cancels an older run
+for the same branch or pull request. Interop uses local loopback connections;
+RTU physical serial timing remains outside this CI coverage.
 
 `fuzz-smoke` exercises 20,000 deterministic read/write decoder mutations and six
 oversized MBAP-length cases with runtime safety checks. It is a bounded regression
@@ -590,9 +599,9 @@ python3 -m venv /tmp/modbus-interop-venv
 
 An existing `test_server/.venv` with the pinned dependency can also be used.
 Harnesses use ephemeral loopback ports and clean up their servers. Both accept
-`--zig PATH` and `--zig-cache-dir PATH`. The client harness additionally accepts
-`--seed N` and `--random-cases N`, and retains reference vectors, a JSON report,
-and Zig output in its artifact directory.
+`--zig PATH`, `--zig-cache-dir PATH`, and `--artifacts DIR` to retain logs and a
+JSON report. The client harness additionally accepts `--seed N` and
+`--random-cases N`, and retains reference vectors in its artifact directory.
 
 Client cases cover all supported functions, two units, quantity/address
 boundaries, packed bits, exceptions, transaction rollover, reconnects, and write

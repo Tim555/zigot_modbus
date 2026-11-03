@@ -76,18 +76,29 @@ def main():
     parser.add_argument("--zig", default="zig")
     parser.add_argument("--zig-cache-dir")
     parser.add_argument("--optimize", choices=("Debug", "ReleaseSafe"), default="Debug")
+    parser.add_argument("--artifacts", help="retain build log, server log, and report here (default: new /tmp directory)")
     args = parser.parse_args()
     if pymodbus.__version__ != "3.6.9":
         raise RuntimeError("Install interop-requirements.txt (pymodbus==3.6.9)")
-    artifacts = Path(tempfile.mkdtemp(prefix="modbus-server-interop-"))
+    artifacts = Path(args.artifacts or tempfile.mkdtemp(prefix="modbus-server-interop-")).resolve()
+    artifacts.mkdir(parents=True, exist_ok=True)
     binary = artifacts / "server"
     command = [args.zig, "build-exe", f"-O{args.optimize}", "--dep", "zigot_modbus", f"-Mroot={ROOT / 'tests/interop_server.zig'}", f"-Mzigot_modbus={ROOT / 'src/root.zig'}", f"-femit-bin={binary}"]
     if args.zig_cache_dir:
         command += ["--cache-dir", args.zig_cache_dir]
-    subprocess.run(command, cwd=ROOT, check=True, timeout=180)
-    server = subprocess.Popen([str(binary)], stderr=subprocess.PIPE, text=True)
+    server = None
     report = dict(stack=f"pymodbus=={pymodbus.__version__}", optimize=args.optimize, concurrent_clients=16, concurrent_requests=320, status="failed")
     try:
+        try:
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired as exc:
+            (artifacts / "zig.log").write_text(
+                (exc.stdout or b"").decode(errors="replace") + (exc.stderr or b"").decode(errors="replace"))
+            raise
+        (artifacts / "zig.log").write_text(result.stdout + result.stderr)
+        print(result.stdout + result.stderr, end="", flush=True)
+        result.check_returncode()
+        server = subprocess.Popen([str(binary)], stderr=subprocess.PIPE, text=True)
         # Bound readiness so startup failures cannot leave the harness hanging.
         with selectors.DefaultSelector() as selector:
             selector.register(server.stderr, selectors.EVENT_READ)
@@ -96,15 +107,19 @@ def main():
             port = int(server.stderr.readline())
         exercise(port)
         report["status"] = "passed"
+    except Exception as exc:
+        report["error"] = str(exc)
+        raise
     finally:
-        server.terminate()
-        try:
-            server.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            server.kill()
-            server.wait()
-        (artifacts / "server.log").write_text(server.stderr.read())
-        server.stderr.close()
+        if server is not None:
+            server.terminate()
+            try:
+                server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait()
+            (artifacts / "server.log").write_text(server.stderr.read())
+            server.stderr.close()
         (artifacts / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         print(f"Artifacts: {artifacts}")
         print(json.dumps(report))
