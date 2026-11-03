@@ -1,5 +1,4 @@
-//! Modbus frame and PDU codecs. Currently supports TCP MBAP framing; socket I/O
-//! lives in tcp_transport.zig.
+//! Modbus TCP/RTU framing, PDU codecs, and CRC-16/MODBUS. No transport I/O.
 const std = @import("std");
 
 pub const default_port: u16 = 502;
@@ -720,4 +719,70 @@ test "multiple-write decoders reject impossible expected quantities and ranges" 
         try std.testing.expectError(error.InvalidQuantity, decode(&.{}, 0, 1, 0, limit + 1));
         try std.testing.expectError(error.InvalidAddressRange, decode(&.{}, 0, 1, 65535, 2));
     }
+}
+
+/// CRC-16/MODBUS. RTU frames transmit the low byte first.
+pub fn crc16(bytes: []const u8) u16 {
+    var crc: u16 = 0xffff;
+    for (bytes) |byte| {
+        crc ^= byte;
+        for (0..8) |_| {
+            crc = if (crc & 1 != 0) (crc >> 1) ^ 0xa001 else crc >> 1;
+        }
+    }
+    return crc;
+}
+
+test "CRC-16/MODBUS check value" {
+    try std.testing.expectEqual(@as(u16, 0x4b37), crc16("123456789"));
+    try std.testing.expectEqual(@as(u16, 0xffff), crc16(""));
+}
+
+pub const max_rtu_adu_length: usize = 256;
+
+pub const RtuFrame = struct {
+    unit_id: u8,
+    pdu: []const u8,
+};
+
+/// Encode address + PDU + low-byte-first CRC. PDU must include a function byte.
+/// Input and output buffers must not overlap.
+pub fn encode_rtu_frame(unit_id: u8, pdu: []const u8, out: []u8) !usize {
+    if (pdu.len == 0 or pdu.len > 253) return error.InvalidLength;
+    if (out.len < pdu.len + 3) return error.BufferTooSmall;
+    out[0] = unit_id;
+    @memcpy(out[1 .. 1 + pdu.len], pdu);
+    const checksum = crc16(out[0 .. 1 + pdu.len]);
+    out[1 + pdu.len] = @truncate(checksum);
+    out[2 + pdu.len] = @truncate(checksum >> 8);
+    return pdu.len + 3;
+}
+
+/// Verify a complete RTU ADU. Returned PDU borrows the input frame.
+pub fn decode_rtu_frame(frame: []const u8) !RtuFrame {
+    if (frame.len < 4 or frame.len > max_rtu_adu_length) return error.InvalidLength;
+    const end = frame.len - 2;
+    const checksum = @as(u16, frame[end]) | (@as(u16, frame[end + 1]) << 8);
+    if (crc16(frame[0..end]) != checksum) return error.InvalidCrc;
+    return .{ .unit_id = frame[0], .pdu = frame[1..end] };
+}
+
+test "RTU frame known vector, CRC byte order, and length bounds" {
+    const known = [_]u8{ 1, 3, 0, 0, 0, 10, 0xc5, 0xcd };
+    var out: [max_rtu_adu_length]u8 = undefined;
+    const n = try encode_rtu_frame(1, known[1..6], &out);
+    try std.testing.expectEqualSlices(u8, &known, out[0..n]);
+    const decoded = try decode_rtu_frame(&known);
+    try std.testing.expectEqual(@as(u8, 1), decoded.unit_id);
+    try std.testing.expectEqualSlices(u8, known[1..6], decoded.pdu);
+    out[n - 1] ^= 1;
+    try std.testing.expectError(error.InvalidCrc, decode_rtu_frame(out[0..n]));
+    for (0..4) |len| try std.testing.expectError(error.InvalidLength, decode_rtu_frame(known[0..len]));
+    try std.testing.expectError(error.InvalidLength, encode_rtu_frame(1, &.{}, &out));
+    const large: [257]u8 = @splat(0);
+    try std.testing.expectError(error.InvalidLength, decode_rtu_frame(&large));
+    try std.testing.expectError(error.InvalidLength, encode_rtu_frame(1, large[0..254], &out));
+    try std.testing.expectError(error.BufferTooSmall, encode_rtu_frame(1, &.{3}, out[0..3]));
+    try std.testing.expectEqual(@as(usize, 256), try encode_rtu_frame(247, large[0..253], &out));
+    _ = try decode_rtu_frame(&out);
 }

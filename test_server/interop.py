@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Zig TCP client against PyModbus, using its client as an oracle."""
+"""Compare Zig TCP/RTU clients with PyModbus on a local byte stream."""
 import argparse
 import asyncio
 import json
@@ -11,6 +11,7 @@ import time
 
 import pymodbus
 from pymodbus.client import ModbusTcpClient
+from pymodbus.framer import Framer
 from pymodbus.datastore import ModbusSlaveContext, ModbusSparseDataBlock, ModbusServerContext
 from pymodbus.server import ModbusTcpServer
 
@@ -106,7 +107,7 @@ def verify_writes(client, writes):
 def run_clients(args, port, vectors, writes, artifacts):
     """Validate the reference reads before exporting their values to the Zig test."""
     methods = {1: "read_coils", 2: "read_discrete_inputs", 3: "read_holding_registers", 4: "read_input_registers"}
-    client = ModbusTcpClient("127.0.0.1", port=port, timeout=2, retries=0)
+    client = ModbusTcpClient("127.0.0.1", port=port, timeout=2, retries=0, framer=Framer.RTU if args.rtu else Framer.SOCKET)
     if not client.connect():
         raise RuntimeError("reference client failed to connect")
     try:
@@ -141,7 +142,7 @@ def run_clients(args, port, vectors, writes, artifacts):
     (artifacts / "write-vectors.json").write_text(json.dumps(writes, indent=2) + "\n")
     fixture = artifacts / "vectors.zig"
     fixture.write_text("\n".join(source) + "\n")
-    command = [args.zig, "build", "interop-test", f"-Dinterop-port={port}", f"-Dinterop-vectors={fixture}", f"-Doptimize={args.optimize}", "--summary", "all"]
+    command = [args.zig, "build", "rtu-interop-test" if args.rtu else "interop-test", f"-Dinterop-port={port}", f"-Dinterop-vectors={fixture}", f"-Doptimize={args.optimize}", "--summary", "all"]
     if args.zig_cache_dir:
         command += ["--cache-dir", args.zig_cache_dir]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=args.timeout)
@@ -165,9 +166,9 @@ async def run(args):
     writes = write_cases(args.seed)
     (artifacts / "input-cases.json").write_text(json.dumps(vectors, indent=2) + "\n")
     # Port zero lets the OS allocate a free port without a reserve/rebind race.
-    server = ModbusTcpServer(context(), address=("127.0.0.1", 0))
+    server = ModbusTcpServer(context(), address=("127.0.0.1", 0), framer=Framer.RTU if args.rtu else Framer.SOCKET)
     started = time.monotonic()
-    report = dict(stack=f"pymodbus=={VERSION}", seed=args.seed, cases=len(vectors), write_cases=len(writes), optimize=args.optimize, status="failed")
+    report = dict(transport="RTU frames over loopback TCP (no serial timing)" if args.rtu else "TCP", stack=f"pymodbus=={VERSION}", seed=args.seed, cases=len(vectors), write_cases=len(writes), optimize=args.optimize, status="failed")
     try:
         if not await server.listen():
             raise RuntimeError("PyModbus server failed to listen")
@@ -188,6 +189,7 @@ async def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--rtu", action="store_true", help="test RTU ADUs using PyModbus RTU framing over a loopback byte stream; not serial timing")
     parser.add_argument("--zig", default="zig")
     parser.add_argument("--zig-cache-dir")
     parser.add_argument("--optimize", choices=("Debug", "ReleaseSafe"), default="Debug")

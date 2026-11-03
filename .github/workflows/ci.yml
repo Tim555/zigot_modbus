@@ -27,3 +27,26 @@ jobs:
         run: zig build test -Doptimize=ReleaseSafe
       - name: Cross-compile tests
         run: zig build check -Dtarget=aarch64-linux
+  rtu-interop:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        optimize: [Debug, ReleaseSafe]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install independent Modbus stack
+        run: python -m pip install -r test_server/interop-requirements.txt
+      - name: Test RTU interoperability
+        run: python test_server/interop.py --rtu --optimize ${{ matrix.optimize }} --artifacts interop-artifacts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rtu-interop-${{ matrix.optimize }}
+          path: interop-artifacts

@@ -4,7 +4,7 @@ const zigot_modbus = @import("zigot_modbus");
 test "public API: RTU read holding registers request checksum" {
     // Unit 1, function 3, starting address 0, quantity 10.
     const request = [_]u8{ 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a };
-    try std.testing.expectEqual(@as(u16, 0xcdc5), zigot_modbus.rtu.crc16(&request));
+    try std.testing.expectEqual(@as(u16, 0xcdc5), zigot_modbus.modbus_codec.crc16(&request));
 }
 
 test "public API: protocol constants" {
@@ -296,4 +296,8 @@ test {
 
 test {
     _ = @import("server.zig");
+}
+
+test {
+    _ = @import("rtu.zig");
 }

@@ -1,12 +1,13 @@
 # zigot_modbus
 
-A pure Zig Modbus library with a synchronous TCP client, a concurrent TCP server,
-TCP frame codecs, and CRC-16/MODBUS. The repository also includes a read-only
+A pure Zig Modbus library with synchronous TCP and RTU clients, a concurrent TCP
+server, TCP/RTU frame codecs, and CRC-16/MODBUS. The repository also includes a read-only
 polling CLI and a development server for trying the library locally.
 
 **Status: early development (`0.1.0-dev`).** The TCP client and server implement
-all eight common read/write functions listed below. RTU support currently consists
-of the CRC primitive; serial transport and RTU framing are not implemented.
+all eight common read/write functions listed below. The RTU client supports the
+same functions over a caller-supplied serial transaction adapter. Native serial
+port configuration and bus timing remain caller responsibilities.
 The project has no external Zig dependencies or C bindings.
 
 ## Contents
@@ -16,6 +17,7 @@ The project has no external Zig dependencies or C bindings.
 - [Polling CLI](#polling-cli)
 - [Include the library in a Zig project](#include-the-library-in-a-zig-project)
 - [TCP client](#tcp-client)
+- [RTU client](#rtu-client)
 - [TCP server](#tcp-server)
 - [TCP transport and timeouts](#tcp-transport-and-timeouts)
 - [Codecs and RTU CRC](#codecs-and-rtu-crc)
@@ -38,7 +40,7 @@ The supported toolchain is **Zig 0.17.0**, as pinned in CI. Networking uses
 | Write multiple coils | FC15 | `writeMultipleCoils` | 1968 bits |
 | Write multiple holding registers | FC16 | `writeMultipleRegisters` | 123 registers |
 
-All eight functions are supported by both the TCP client and server. Every client
+All eight functions are supported by the TCP and RTU clients and the TCP server. Every client
 operation also has a `Detailed` variant that preserves server exception data.
 The CLI exposes the four read functions.
 
@@ -55,7 +57,8 @@ Current boundaries:
   for concurrent connections.
 - Reconnection, retries, polling schedules, and serial I/O belong to the caller.
   The CLI supplies a simple polling loop.
-- There is no RTU client/server, serial configuration, or RTU frame/timing layer.
+- There is no RTU server or built-in serial port driver. RTU adapters supply
+  serial configuration, timeouts, frame boundaries, and bus timing.
 - The CLI is a subset of mbpoll-style functionality, with no write commands or
   typed multi-register decoding.
 
@@ -239,13 +242,14 @@ That import exposes the complete public library:
 | Export | Purpose |
 | --- | --- |
 | `SyncTcpModbusClient` | Synchronous Modbus TCP read/write client |
+| `SyncRtuModbusClient`, `RtuTransport` | RTU client and caller-supplied transaction adapter |
+| `RtuResult`, `RtuException` | RTU operation counts or exceptions with the original five-byte frame |
 | `TcpServer` | Concurrent Modbus TCP server |
 | `TcpClient` | Protocol-independent blocking TCP byte transport |
 | `Device`, `TcpServerOptions` | Server unit tables and configuration |
 | `ReadResult`, `WriteResult` | Detailed operation counts or server exceptions |
 | `max_register_count`, `max_bit_count` | Read quantity limits |
 | `modbus_codec` | MBAP headers, TCP request encoders, response decoders, exceptions |
-| `rtu` | CRC-16/MODBUS primitive |
 | `FunctionCode` | Enum naming the eight supported functions |
 | `max_pdu_length` | Maximum PDU size, 253 bytes |
 
@@ -339,6 +343,49 @@ client or share one concurrently. `disconnect` is idempotent. Connecting an
 already connected client returns `AlreadyConnected`. `isConnected` reports local
 socket ownership, not remote peer health. Transport I/O errors, timeouts, and
 observed EOF close the connection; reconnect/retry decisions are yours.
+
+## RTU client
+
+`SyncRtuModbusClient` offers the same eight operations, argument order, and
+`Detailed` variants as the TCP client. Reads use caller-owned output buffers;
+writes return acknowledged counts. Unit IDs must be 1–247. Broadcasts (unit 0)
+and reserved addresses are rejected before I/O. There are no automatic retries.
+
+The client borrows an `RtuTransport`, which exchanges complete RTU ADUs:
+
+```zig
+const modbus = @import("zigot_modbus");
+
+// Call with a serial adapter that is already open and configured.
+fn readRtu(transport: modbus.RtuTransport) ![2]u16 {
+    var client = modbus.SyncRtuModbusClient.init(transport);
+    var registers: [2]u16 = undefined;
+    _ = try client.readHoldingRegister(10, 2, 1, &registers);
+    return registers;
+}
+```
+
+`RtuTransport` contains `context: *anyopaque` and an exchange callback with type
+`*const fn (*anyopaque, []const u8, []u8) anyerror!usize`. The callback receives a
+complete request (address, PDU, CRC), sends it exactly once, fills the response
+buffer with exactly one complete ADU including CRC, and returns its length.
+It must enforce deadlines and RTU inter-character/inter-frame timing, manage
+RS-485 direction if needed, and reject truncated or combined frames. After an
+error it must drain/recover to a clean frame boundary before another exchange.
+It must not retry writes. The context and port must outlive the client; the
+caller closes the port. Serialize all access to the bus, including other clients.
+
+The library encodes requests and validates response CRC, unit, function, exact
+length, byte count, and write echoes before returning data. Invalid requests
+fail before the callback runs. Protocol and adapter errors propagate through
+`try`; a valid exception becomes `error.ModbusException` in simple methods.
+`Detailed` methods return `RtuResult`, containing `.count` or `.exception`.
+`RtuException` holds `unit_id`, `function_code`, `exception_code`, and the actual
+five-byte `raw_frame`; it contains no TCP transaction/header metadata.
+
+A timeout may occur after a write has taken effect. The application decides
+whether to retry after recovering the bus. This API implements the RTU protocol
+client; it does not open a platform serial port or configure baud/parity/stop bits.
 
 ## TCP server
 
@@ -469,17 +516,20 @@ write decoded values into caller buffers. Consult
 [`src/modbus_codec.zig`](src/modbus_codec.zig) for exact signatures. The maximum
 TCP ADU length is 260 bytes, with a 7-byte MBAP header and up to 253 PDU bytes.
 The `modbus_codec` module currently handles TCP MBAP framing; it does not provide
-RTU framing.
+serial I/O. It also provides `encode_rtu_frame(unit_id, pdu, out)` and
+`decode_rtu_frame(frame)` for address/PDU/CRC framing. RTU frames are at most
+`max_rtu_adu_length` (256) bytes. The decoder checks length and CRC and returns a
+unit ID and a PDU slice borrowing the input. Encoder input/output must not overlap.
 
-The separate RTU primitive computes CRC-16/MODBUS:
+The CRC-16/MODBUS primitive lives in the same codec module:
 
 ```zig
-const checksum = modbus.rtu.crc16(&.{ 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a });
+const checksum = modbus.modbus_codec.crc16(&.{ 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a });
 // checksum == 0xcdc5; an RTU frame transmits 0xc5 followed by 0xcd.
 ```
 
-Serial transport, frame assembly, CRC attachment/verification, and silent-interval
-timing remain application work or future library features.
+The former `modbus.rtu.crc16` path has moved to `modbus.modbus_codec.crc16`;
+there is no public `rtu` implementation-module export.
 
 ## Tests and development
 
@@ -502,12 +552,15 @@ zig fmt --check build.zig build.zig.zon src tests
 | `test` | Run library, public API, and CLI parser tests |
 | `check` | Compile test suites and CLI without running them; supports cross targets |
 | `fuzz-smoke` | Run bounded deterministic decoder mutations |
-| `interop-test` | Harness-driven client interop; requires generated vectors |
+| `interop-test` | Harness-driven TCP client interop; requires generated vectors |
+| `rtu-interop-test` | Harness-driven RTU client interop; use `interop.py --rtu` |
 
 The normal tests require no Python server. They include local loopback networking,
 read/write behavior, server concurrency, fragmentation, pipelining, connection
 limits, timeouts, and cancellation. CI is configured for Linux, Windows, and
 macOS, including Debug/ReleaseSafe tests and an aarch64-linux compilation check.
+A Linux RTU interoperability job runs both optimization modes and retains reports
+and vectors as CI artifacts.
 
 `fuzz-smoke` exercises 20,000 deterministic read/write decoder mutations and six
 oversized MBAP-length cases with runtime safety checks. It is a bounded regression
@@ -526,6 +579,10 @@ python3 -m venv /tmp/modbus-interop-venv
 /tmp/modbus-interop-venv/bin/python test_server/interop.py --artifacts /tmp/interop-debug
 /tmp/modbus-interop-venv/bin/python test_server/interop.py --optimize ReleaseSafe --artifacts /tmp/interop-release
 
+# Zig RTU client against the PyModbus RTU framer over loopback TCP:
+/tmp/modbus-interop-venv/bin/python test_server/interop.py --rtu --artifacts /tmp/rtu-debug
+/tmp/modbus-interop-venv/bin/python test_server/interop.py --rtu --optimize ReleaseSafe --artifacts /tmp/rtu-release
+
 # Zig server against the PyModbus client:
 /tmp/modbus-interop-venv/bin/python test_server/server_interop.py
 /tmp/modbus-interop-venv/bin/python test_server/server_interop.py --optimize ReleaseSafe
@@ -539,8 +596,12 @@ and Zig output in its artifact directory.
 
 Client cases cover all supported functions, two units, quantity/address
 boundaries, packed bits, exceptions, transaction rollover, reconnects, and write
-readback checked independently through PyModbus. Server tests cover all eight
-functions, unit routing, boundary quantities, and 16 concurrent clients.
+readback checked independently through PyModbus. The `--rtu` mode uses PyModbus RTU framing for both the independent reference
+client and server, reusing the same seeded read and write cases. The Zig adapter
+receives response bytes individually. This tests RTU ADUs and CRC over a local
+TCP byte stream, not a serial port, physical RS-485, or RTU silent intervals.
+Server tests cover all eight functions, unit routing, boundary quantities, and
+16 concurrent clients.
 These checks do not establish interoperability with every device or production
 readiness. The reusable
 [`modbus-interop` skill](skills/modbus-interop/SKILL.md) describes deeper test
@@ -557,8 +618,8 @@ are not included in the Zig package's distribution paths.
 | `src/modbus_tcp.zig` | Synchronous Modbus TCP client |
 | `src/tcp_server.zig` | Concurrent server and caller-owned device tables |
 | `src/tcp_transport.zig` | Protocol-independent TCP transport |
-| `src/modbus_codec.zig` | TCP MBAP/PDU codecs and diagnostics |
-| `src/rtu.zig` | CRC-16/MODBUS |
+| `src/modbus_codec.zig` | TCP MBAP/PDU codecs, RTU framing/CRC, and diagnostics |
+| `src/rtu.zig` | Synchronous RTU client and serial adapter contract |
 | `tests/` | Public API, server, interop, and decoder tests |
 | `test_server/` | Python interoperability harnesses and pinned requirements |
 | `build.zig`, `build.zig.zon` | Build steps, module registration, and package manifest |

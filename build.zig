@@ -64,6 +64,7 @@ pub fn build(b: *std.Build) void {
     fuzz_step.dependOn(&b.addRunArtifact(fuzz_smoke).step);
 
     // Opt-in: the Python harness supplies a live loopback server and reference vectors.
+    const rtu_interop_step = b.step("rtu-interop-test", "Run RTU frames against PyModbus (use interop.py --rtu)");
     const interop_step = b.step("interop-test", "Run against the PyModbus server (use test_server/interop.py)");
     if (b.option([]const u8, "interop-vectors", "Absolute path to generated PyModbus vectors")) |path| {
         const options = b.addOptions();
@@ -77,7 +78,17 @@ pub fn build(b: *std.Build) void {
         module.addOptions("interop_options", options);
         module.addAnonymousImport("interop_vectors", .{ .root_source_file = .{ .cwd_relative = path } });
         interop_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);
+        const rtu_module = b.createModule(.{
+            .root_source_file = b.path("tests/rtu_interop.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "zigot_modbus", .module = zigot_modbus }},
+        });
+        rtu_module.addOptions("interop_options", options);
+        rtu_module.addAnonymousImport("interop_vectors", .{ .root_source_file = .{ .cwd_relative = path } });
+        rtu_interop_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = rtu_module })).step);
     } else {
+        rtu_interop_step.dependOn(&b.addFail("Run test_server/interop.py --rtu to generate vectors").step);
         interop_step.dependOn(&b.addFail("Run test_server/interop.py to start a server and generate interop vectors").step);
     }
 }
