@@ -1,7 +1,7 @@
 //! Synchronous RTU transactions with caller-supplied serial transport.
 const codec = @import("modbus_codec.zig");
-const max_register_count = @import("modbus_tcp.zig").max_register_count;
-const max_bit_count = @import("modbus_tcp.zig").max_bit_count;
+const max_register_count = @import("modbus_tcp_client.zig").max_register_count;
+const max_bit_count = @import("modbus_tcp_client.zig").max_bit_count;
 
 /// The adapter owns serial configuration, RS-485 direction, deadlines, t1.5/t3.5,
 /// and recovery/draining after errors. Exchange sends the entire request exactly

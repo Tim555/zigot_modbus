@@ -624,11 +624,11 @@ are not included in the Zig package's distribution paths.
 | `src/root.zig` | Public package exports and function codes |
 | `src/main.zig` | Polling CLI and argument tests |
 | `src/server_main.zig` | Fixed local development server |
-| `src/modbus_tcp.zig` | Synchronous Modbus TCP client |
+| `src/modbus_tcp_client.zig` | Synchronous Modbus TCP client |
 | `src/tcp_server.zig` | Concurrent server and caller-owned device tables |
 | `src/tcp_transport.zig` | Protocol-independent TCP transport |
 | `src/modbus_codec.zig` | TCP MBAP/PDU codecs, RTU framing/CRC, and diagnostics |
-| `src/rtu.zig` | Synchronous RTU client and serial adapter contract |
+| `src/modbus_rtu_client.zig` | Synchronous RTU client and serial adapter contract |
 | `tests/` | Public API, server, interop, and decoder tests |
 | `test_server/` | Python interoperability harnesses and pinned requirements |
 | `build.zig`, `build.zig.zon` | Build steps, module registration, and package manifest |
