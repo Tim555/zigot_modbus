@@ -45,6 +45,7 @@ pub const ModbusErrorKind = enum {
     memory_parity_error,
     gateway_path_unavailable,
     gateway_target_device_failed_to_respond,
+    normal_response,
 };
 
 pub const ModbusException = struct {
@@ -285,6 +286,9 @@ pub fn decode_exception_response(frame: []const u8, expected_transaction_id: u16
     return exc;
 }
 
+/// Classify TCP response framing and exceptions. A normal_response has a matching
+/// MBAP header and a non-exception function code. Use the function-specific decoder
+/// to validate its contents against the request.
 /// Oversized TCP ADUs are malformed. The diagnostic retains at most one PDU's worth of payload.
 pub fn decode_modbus_error(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8) ModbusFrameError {
     const empty_header = MbapHeader{
@@ -403,8 +407,14 @@ pub fn decode_modbus_error(frame: []const u8, expected_transaction_id: u16, expe
         return error_details;
     }
 
+    const kind: ModbusErrorKind = if (frame.len != 6 + @as(usize, header.length))
+        .invalid_length
+    else if (function_code == 0)
+        .invalid_function_code
+    else
+        .normal_response;
     return ModbusFrameError{
-        .kind = if (function_code != 0x03) .invalid_function_code else .modbus_exception,
+        .kind = kind,
         .transaction_id = header.transaction_id,
         .protocol_id = header.protocol_id,
         .unit_id = header.unit_id,
@@ -412,7 +422,12 @@ pub fn decode_modbus_error(frame: []const u8, expected_transaction_id: u16, expe
         .pdu = pdu,
         .pdu_len = pdu_len,
         .function_code = function_code,
-        .message = if (function_code != 0x03) "Unexpected function code in response" else "Response is a valid Modbus function without exception",
+        .message = switch (kind) {
+            .invalid_length => "Frame size does not match MBAP length",
+            .invalid_function_code => "Function code zero is invalid",
+            .normal_response => "Normal Modbus response",
+            else => unreachable,
+        },
     };
 }
 
@@ -571,6 +586,36 @@ test "decode_exception_response" {
     try std.testing.expectEqual(@as(u16, 0x1234), exc.transaction_id);
     try std.testing.expectEqual(@as(u8, 0x01), exc.unit_id);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x83, 0x02 }, exc.pdu[0..exc.pdu_len]);
+}
+
+test "diagnostic decoder classifies normal responses across function codes" {
+    const cases = [_][5]u8{
+        .{ 1, 1, 1, 0, 0 },
+        .{ 2, 1, 1, 0, 0 },
+        .{ 3, 2, 0, 1, 0 },
+        .{ 4, 2, 0, 1, 0 },
+        .{ 5, 0, 0, 0xff, 0 },
+        .{ 6, 0, 0, 0, 1 },
+        .{ 15, 0, 0, 0, 1 },
+        .{ 16, 0, 0, 0, 1 },
+    };
+    for (cases) |pdu| {
+        const pdu_length: usize = switch (pdu[0]) {
+            1, 2 => 3,
+            3, 4 => 4,
+            else => 5,
+        };
+        var frame: [mbap_header_length + 5]u8 = undefined;
+        try encode_mbap_header(42, 0, @intCast(pdu_length + 1), 7, &frame);
+        @memcpy(frame[mbap_header_length..], &pdu);
+        const frame_length = mbap_header_length + pdu_length;
+        const result = decode_modbus_error(frame[0..frame_length], 42, 7);
+        try std.testing.expectEqual(ModbusErrorKind.normal_response, result.kind);
+        try std.testing.expectEqual(@as(?u8, pdu[0]), result.function_code);
+        try std.testing.expectEqual(@as(?ExceptionCode, null), result.exception_code);
+        try std.testing.expectEqualSlices(u8, pdu[0..pdu_length], result.pdu[0..result.pdu_len]);
+        try std.testing.expectEqual(ModbusErrorKind.invalid_length, decode_modbus_error(frame[0 .. frame_length - 1], 42, 7).kind);
+    }
 }
 
 test "decode_modbus_error reports full context" {
