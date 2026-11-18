@@ -285,6 +285,7 @@ pub fn decode_exception_response(frame: []const u8, expected_transaction_id: u16
     return exc;
 }
 
+/// Oversized TCP ADUs are malformed. The diagnostic retains at most one PDU's worth of payload.
 pub fn decode_modbus_error(frame: []const u8, expected_transaction_id: u16, expected_unit_id: u8) ModbusFrameError {
     const empty_header = MbapHeader{
         .transaction_id = expected_transaction_id,
@@ -308,10 +309,20 @@ pub fn decode_modbus_error(frame: []const u8, expected_transaction_id: u16, expe
     };
 
     var pdu: [max_adu_length]u8 = undefined;
-    var pdu_len: usize = 0;
-    if (frame.len > mbap_header_length) {
-        pdu_len = frame.len - mbap_header_length;
-        std.mem.copyForwards(u8, pdu[0..pdu_len], frame[mbap_header_length..]);
+    const preview_end = @min(frame.len, max_adu_length);
+    const pdu_len = preview_end - mbap_header_length;
+    std.mem.copyForwards(u8, pdu[0..pdu_len], frame[mbap_header_length..preview_end]);
+    if (frame.len > max_adu_length) {
+        return .{
+            .kind = .malformed_response,
+            .transaction_id = header.transaction_id,
+            .protocol_id = header.protocol_id,
+            .unit_id = header.unit_id,
+            .header = header,
+            .pdu = pdu,
+            .pdu_len = pdu_len,
+            .message = "Frame exceeds maximum TCP ADU length",
+        };
     }
     if (header.transaction_id != expected_transaction_id) {
         return ModbusFrameError{
@@ -483,6 +494,20 @@ fn decode_read_bits_response(expected_function: u8, frame: []const u8, expected_
         out[index] = (frame[9 + index / 8] & (@as(u8, 1) << @as(u3, @intCast(index % 8)))) != 0;
     }
     return quantity;
+}
+
+test "diagnostic decoder bounds the payload preview for oversized ADUs" {
+    var frame: [max_adu_length + 32]u8 = undefined;
+    @memset(&frame, 0xa5);
+    try encode_mbap_header(42, 0, 254, 7, &frame);
+    const result = decode_modbus_error(&frame, 42, 7);
+    try std.testing.expectEqual(ModbusErrorKind.malformed_response, result.kind);
+    try std.testing.expectEqual(@as(u16, 42), result.transaction_id);
+    try std.testing.expectEqual(@as(u8, 7), result.unit_id);
+    try std.testing.expectEqualSlices(u8, frame[mbap_header_length..max_adu_length], result.pdu[0..result.pdu_len]);
+
+    const one_extra = decode_modbus_error(frame[0 .. max_adu_length + 1], 42, 7);
+    try std.testing.expectEqual(ModbusErrorKind.malformed_response, one_extra.kind);
 }
 
 test "encode_mbap_header" {

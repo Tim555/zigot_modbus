@@ -229,9 +229,10 @@ pub const SyncTcpModbusClient = struct {
         return .{ .count = count };
     }
 
-    // Receive one complete ADU into caller-owned storage after sending the request.
+    // Close the stream if we cannot receive and validate a complete frame boundary.
     fn exchange(self: *SyncTcpModbusClient, request: []const u8, request_id: u16, unit_id: u8, response: *[codec.max_adu_length]u8) !usize {
         try self.transport.send(request);
+        errdefer self.disconnect();
 
         // TCP may split a frame across reads; first obtain the complete fixed header.
         var response_header: [codec.mbap_header_length]u8 = undefined;
@@ -292,4 +293,35 @@ test "readHoldingRegisterDetailed preserves modbus exception payload" {
     try std.testing.expectEqual(@as(codec.ExceptionCode, .illegal_data_address), result.exception.exception_code);
     try std.testing.expectEqual(@as(u16, 0x1234), result.exception.transaction_id);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x83, 0x02 }, result.exception.pdu[0..result.exception.pdu_len]);
+    try std.testing.expect(client.isConnected());
+}
+
+test "rejected MBAP headers disconnect the client" {
+    const io = std.testing.io;
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try address.listen(io, .{});
+    defer server.deinit(io);
+
+    const cases = [_]struct { header: [7]u8, expected: anyerror }{
+        .{ .header = .{ 0, 1, 0, 0, 0, 5, 1 }, .expected = error.TransactionIdMismatch },
+        .{ .header = .{ 0, 0, 0, 1, 0, 5, 1 }, .expected = error.InvalidProtocolId },
+        .{ .header = .{ 0, 0, 0, 0, 0, 5, 2 }, .expected = error.UnitIdMismatch },
+        .{ .header = .{ 0, 0, 0, 0, 0, 2, 1 }, .expected = error.InvalidLength },
+        .{ .header = .{ 0, 0, 0, 0, 0, 255, 1 }, .expected = error.ResponseTooLarge },
+    };
+    for (cases) |case| {
+        var client = SyncTcpModbusClient.init(io);
+        defer client.disconnect();
+        try client.connect("127.0.0.1", server.socket.address.getPort());
+        const peer = try server.accept(io);
+        defer peer.close(io);
+
+        var writer = peer.writer(io, &.{});
+        try writer.interface.writeAll(&(case.header ++ .{ 3, 2, 0, 12 }));
+        var registers = [_]u16{42};
+        try std.testing.expectError(case.expected, client.readHoldingRegister(0, 1, 1, &registers));
+        try std.testing.expect(!client.isConnected());
+        try std.testing.expectError(error.NotConnected, client.readHoldingRegister(0, 1, 1, &registers));
+        try std.testing.expectEqual(@as(u16, 42), registers[0]);
+    }
 }
