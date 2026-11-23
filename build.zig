@@ -16,21 +16,23 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "zigot_modbus", .module = zigot_modbus }},
     }) });
 
-    const example_module = b.createModule(.{
+    const cli_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{.{ .name = "zigot_modbus", .module = zigot_modbus }},
     });
-    const example = b.addExecutable(.{
-        .name = "zigot_modbus_example",
-        .root_module = example_module,
+    const cli = b.addExecutable(.{
+        .name = "zigot-modbus",
+        .root_module = cli_module,
     });
-    b.installArtifact(example);
-    const run_client = b.addRunArtifact(example);
+    const install_cli = b.addInstallArtifact(cli, .{});
+    b.getInstallStep().dependOn(&install_cli.step);
+    b.step("cli", "Build and install the Modbus TCP polling CLI").dependOn(&install_cli.step);
+    const run_client = b.addRunArtifact(cli);
     run_client.addPassthruArgs();
     b.step("run", "Run the Modbus TCP polling CLI").dependOn(&run_client.step);
-    const cli_tests = b.addTest(.{ .root_module = example_module });
+    const cli_tests = b.addTest(.{ .root_module = cli_module });
 
     const server_example = b.addExecutable(.{
         .name = "zigot_modbus_server",
@@ -51,7 +53,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
     const check = b.step("check", "Compile the library tests without running them");
     check.dependOn(&cli_tests.step);
-    check.dependOn(&example.step);
+    check.dependOn(&cli.step);
     check.dependOn(&unit_tests.step);
     check.dependOn(&integration_tests.step);
     const fuzz_smoke = b.addTest(.{ .root_module = b.createModule(.{

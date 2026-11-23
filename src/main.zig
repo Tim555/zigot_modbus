@@ -2,7 +2,7 @@ const std = @import("std");
 const modbus = @import("zigot_modbus");
 
 const usage =
-    \\Usage: zigot_modbus_example [options] HOST
+    \\Usage: zigot-modbus [options] HOST
     \\Poll a Modbus TCP server (HOST must be an IPv4 or IPv6 literal).
     \\
     \\  -p, --port N       TCP port (default 502)

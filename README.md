@@ -4,11 +4,42 @@ A pure Zig Modbus library with synchronous TCP and RTU clients, a concurrent TCP
 server, TCP/RTU frame codecs, and CRC-16/MODBUS. The repository also includes a read-only
 polling CLI and a development server for trying the library locally.
 
-**Status: early development (`0.1.0-dev`).** The TCP client and server implement
+**Status: early development.** The TCP client and server implement
 all eight common read/write functions listed below. The RTU client supports the
 same functions over a caller-supplied serial transaction adapter. Native serial
 port configuration and bus timing remain caller responsibilities.
 The project has no external Zig dependencies or C bindings.
+
+## Use the library
+
+Once v0.1.0 is published, run this from your Zig application directory:
+
+```sh
+zig fetch --save=zigot_modbus https://github.com/Tim555/zigot_modbus/archive/refs/tags/v0.1.0.tar.gz
+```
+
+Zig records the release URL and content hash in `build.zig.zon`. See the [module
+setup and complete example](#include-the-library-in-a-zig-project). Importing the
+module compiles only the library code your application uses.
+
+## Install the CLI
+
+Get a prebuilt archive from [GitHub Releases](https://github.com/Tim555/zigot_modbus/releases)
+once the first release is published. Choose Linux or macOS on x86-64 or ARM64,
+or Windows on x86-64. Extract the archive and put `zigot-modbus` (or
+`zigot-modbus.exe` on Windows) in a directory on your PATH.
+
+```sh
+zigot-modbus --help
+```
+
+To build just the CLI from a checkout with Zig 0.17.0:
+
+```sh
+zig build cli -Doptimize=ReleaseSafe
+```
+
+The executable is installed in `zig-out/bin`.
 
 ## Contents
 
@@ -74,7 +105,7 @@ This installs two executables in `zig-out/bin` (with `.exe` on Windows):
 
 | Executable | Purpose |
 | --- | --- |
-| `zigot_modbus_example` | Configurable Modbus TCP polling CLI |
+| `zigot-modbus` | Configurable Modbus TCP polling CLI |
 | `zigot_modbus_server` | Development server on `127.0.0.1:5020`, unit 1 |
 
 Start the server in one terminal:
@@ -101,7 +132,7 @@ If you use [Task](https://taskfile.dev/), `task run-server` starts this server a
 ## Polling CLI
 
 ```text
-zigot_modbus_example [options] HOST
+zigot-modbus [options] HOST
 ```
 
 Options may appear before or after the host. Supply option values as separate
@@ -150,7 +181,7 @@ continuous polling.
 zig build run -- --help
 
 # Read two holding registers once, using zero-based offsets:
-./zig-out/bin/zigot_modbus_example -p 5020 -0 -r 10 -c 2 -1 127.0.0.1
+./zig-out/bin/zigot-modbus -p 5020 -0 -r 10 -c 2 -1 127.0.0.1
 
 # Poll eight input registers on unit 2 every two seconds:
 zig build run -- -a 2 -t 3 -r 1 -c 8 -l 2 192.168.1.20
@@ -183,20 +214,10 @@ The CLI uses the client's default transport timeouts described below.
 
 ## Include the library in a Zig project
 
-### Add the dependency
+### Use a local checkout
 
-Fetch an immutable commit archive from your application's directory:
-
-```sh
-zig fetch --save=zigot_modbus https://github.com/Tim555/zigot_modbus/archive/<commit-sha>.tar.gz
-```
-
-Replace `<commit-sha>` with a real full commit SHA. Zig adds the dependency URL
-and content hash to your `build.zig.zon`. Pinning a commit makes the dependency
-reproducible while the API is evolving.
-
-For local development, you can instead add a path dependency to your
-application's `build.zig.zon` dependencies table:
+For local development, add a path dependency to your application's
+`build.zig.zon` dependencies table:
 
 ```zig
 .dependencies = .{
@@ -547,6 +568,7 @@ zig fmt --check build.zig build.zig.zon src tests
 | Build step | Purpose |
 | --- | --- |
 | `build` (default) | Build and install the CLI and development server |
+| `cli` | Build and install the polling CLI |
 | `run -- ...` | Build and run the CLI with forwarded arguments |
 | `run-server` | Run the fixed local development server |
 | `test` | Run library, public API, and CLI parser tests |

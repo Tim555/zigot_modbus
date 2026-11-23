@@ -5,7 +5,7 @@ tasks:
     desc: Poll the local development Modbus TCP server
     cmds:
       - zig build
-      - ./zig-out/bin/zigot_modbus_example -p 5020 -r 11 -c 2 {{.CLI_ARGS}} 127.0.0.1
+      - ./zig-out/bin/zigot-modbus -p 5020 -r 11 -c 2 {{.CLI_ARGS}} 127.0.0.1
 
   run-server:
     desc: Build and run the Zig Modbus TCP server on 127.0.0.1:5020

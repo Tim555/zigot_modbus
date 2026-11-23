@@ -1,0 +1,61 @@
+name: Release CLI
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-linux-musl, aarch64-linux-musl, x86_64-macos, aarch64-macos, x86_64-windows-gnu]
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build and package CLI
+        shell: bash
+        run: |
+          zig build cli -Dtarget="$TARGET" -Doptimize=ReleaseSafe --prefix staging
+          mkdir dist
+          cp LICENSE staging/bin/
+          asset="zigot-modbus-$TARGET"
+          if [[ "$TARGET" == *-windows-* ]]; then
+            (cd staging/bin && zip "../../dist/$asset.zip" zigot-modbus.exe LICENSE)
+          else
+            tar -czf "dist/$asset.tar.gz" -C staging/bin zigot-modbus LICENSE
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zigot-modbus-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --generate-notes dist/*
