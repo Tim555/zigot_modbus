@@ -170,14 +170,22 @@ test "TCP exact receive does not restart its timeout for each fragment" {
 }
 
 test "TCP send timeout closes a backpressured connection" {
-    var pair = try transportPair(.{ .write_timeout = timeoutMs(25) });
+    var pair = try transportPair(.{});
     defer pair.client.disconnect();
     defer pair.peer.close(std.testing.io);
-    // The peer deliberately never reads; this exceeds typical socket buffers.
-    const bytes = try std.testing.allocator.alloc(u8, 32 * 1024 * 1024);
+    // A successful send may only mean the OS buffered the data. Keep filling
+    // the unread connection under one deadline instead of assuming a fixed
+    // payload exceeds every platform's buffering capacity.
+    const bytes = try std.testing.allocator.alloc(u8, 1024 * 1024);
     defer std.testing.allocator.free(bytes);
     @memset(bytes, 0x5a);
-    try std.testing.expectError(error.Timeout, pair.client.send(bytes));
+    pair.client.options.write_timeout = timeoutMs(100).toDeadline(std.testing.io);
+    const Sender = struct {
+        fn fill(client: *zigot_modbus.TcpClient, data: []const u8) !void {
+            while (true) try client.send(data);
+        }
+    };
+    try std.testing.expectError(error.Timeout, Sender.fill(&pair.client, bytes));
     try std.testing.expect(!pair.client.isConnected());
 }
 
